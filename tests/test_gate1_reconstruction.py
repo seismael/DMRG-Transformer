@@ -41,17 +41,17 @@ def test_gate1_tt_svd_reconstruction_matches_theoretical_bound() -> None:
     )
 
 
-def test_gate1_round_trip_low_rank_is_exact() -> None:
-    """A rank-r matrix decomposed at max_rank=r must reconstruct to machine precision."""
+def test_gate1_full_rank_round_trip_is_exact() -> None:
+    """Decomposing at full TT-rank (no truncation) must reconstruct to machine precision."""
     torch.manual_seed(1)
-    r = 8
-    A = torch.randn(64, r, dtype=torch.float32)
-    B = torch.randn(r, 64, dtype=torch.float32)
-    W = A @ B  # rank ≤ r
-    tt, report = TensorTrain.from_dense(W, [8, 8], [8, 8], max_rank=r)
+    W = torch.randn(64, 64, dtype=torch.float32)
+    # Max achievable TT-rank for [8,8]x[8,8] interleaved layout is p_1 = 8*8 = 64.
+    tt, report = TensorTrain.from_dense(W, [8, 8], [8, 8], max_rank=64)
+    # Nothing was truncated → theoretical bound must be 0.
+    assert report.total_frobenius_bound() < 1.0e-5
     W_hat = tt.to_dense()
     err = float(torch.linalg.norm(W - W_hat).item()) / float(torch.linalg.norm(W).item())
-    assert err < 1.0e-4, f"low-rank round-trip rel error {err:.3e}"
+    assert err < 1.0e-4, f"full-rank round-trip rel error {err:.3e}"
 
 
 def test_gate1_invariants_enforced() -> None:

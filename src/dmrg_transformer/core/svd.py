@@ -31,21 +31,25 @@ class SVDResult:
 
 
 def _svd_torch(matrix: torch.Tensor) -> SVDResult:
+    out_dtype = matrix.dtype
     work = to_f64(matrix) if needs_f64_upcast(matrix) else matrix
     U, S, Vh = torch.linalg.svd(work, full_matrices=False)
+    if out_dtype == torch.float64:
+        return SVDResult(U=to_f64(U), S=to_f64(S), Vh=to_f64(Vh), tier=1)
     return SVDResult(U=to_f32(U), S=to_f32(S), Vh=to_f32(Vh), tier=1)
 
 
 def _svd_scipy(matrix: torch.Tensor, driver: str, tier: int) -> SVDResult:
+    out_dtype = matrix.dtype
     np_in = matrix.detach().cpu().numpy().astype(np.float64, copy=False)
     U_np, S_np, Vh_np = scipy.linalg.svd(
         np_in, full_matrices=False, lapack_driver=driver, check_finite=True
     )
     device = matrix.device
     return SVDResult(
-        U=torch.from_numpy(U_np).to(device=device, dtype=torch.float32),
-        S=torch.from_numpy(S_np).to(device=device, dtype=torch.float32),
-        Vh=torch.from_numpy(Vh_np).to(device=device, dtype=torch.float32),
+        U=torch.from_numpy(U_np).to(device=device, dtype=out_dtype),
+        S=torch.from_numpy(S_np).to(device=device, dtype=out_dtype),
+        Vh=torch.from_numpy(Vh_np).to(device=device, dtype=out_dtype),
         tier=tier,
     )
 
