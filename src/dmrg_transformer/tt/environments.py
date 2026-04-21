@@ -51,9 +51,11 @@ def right_pure_product(tt: TensorTrain, k_start: int) -> torch.Tensor:
     returns a tensor ``[r_d=1]`` of ones (the empty product).
     """
     d = tt.num_cores
-    dtype = tt.get_core(0).dtype
+    G0 = tt.get_core(0)
+    dtype = G0.dtype
+    device = G0.device
     if k_start >= d:
-        return torch.ones((1,), dtype=dtype)
+        return torch.ones((1,), dtype=dtype, device=device)
     # Start with last core: shape (r_{d-1}, i_d, j_d, 1) flatten trailing rank-1.
     last = tt.get_core(d - 1)
     r_l, p, _ = last.shape

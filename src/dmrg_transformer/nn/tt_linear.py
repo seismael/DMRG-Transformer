@@ -61,9 +61,13 @@ class TTLinear(nn.Module):
         self.input_dims = list(input_dims)
         self.output_dims = list(output_dims)
 
-        # Initialize TT from a small-magnitude random dense matrix.
+        # Initialize TT from a small-magnitude random dense matrix on the
+        # project's authorized device (GPU by default).
+        from dmrg_transformer.core.device import require_cuda
+
+        device = require_cuda()
         scale = 1.0 / (in_features**0.5)
-        W_init = torch.randn(in_features, out_features, dtype=dtype) * scale
+        W_init = torch.randn(in_features, out_features, dtype=dtype, device=device) * scale
         tt, _ = TensorTrain.from_dense(W_init, input_dims, output_dims, max_rank=rank)
         # Store cores as buffers (not nn.Parameter — AGENTS Constraint 1 forbids gradient
         # tracking on weights updated by the DMRG solver).
@@ -71,7 +75,7 @@ class TTLinear(nn.Module):
             self.register_buffer(f"_core_{k}", core.clone())
         self._num_cores = tt.num_cores
         if bias:
-            self.register_buffer("_bias", torch.zeros(out_features, dtype=dtype))
+            self.register_buffer("_bias", torch.zeros(out_features, dtype=dtype, device=device))
             self._has_bias = True
         else:
             self._has_bias = False

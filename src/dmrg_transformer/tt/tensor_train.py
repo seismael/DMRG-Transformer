@@ -14,7 +14,7 @@ from math import prod
 
 import torch
 
-from dmrg_transformer.core.svd import discarded_energy, robust_svd, truncate
+from dmrg_transformer.core.svd import robust_svd, truncate
 
 
 @dataclass(frozen=True)

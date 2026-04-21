@@ -52,6 +52,13 @@ def _build_jacobian(tt: TensorTrain, X: torch.Tensor, k: int) -> torch.Tensor:
     """Build the Jacobian ``J`` such that ``Y_pred.flatten(start_dim=1) = J @ vec(G_k)``.
 
     Returns a tensor of shape ``[batch, M, r_left * p_k * r_right]``.
+
+    .. warning::
+        This reference implementation materialises the full Jacobian. For
+        anything beyond toy scales use :func:`_build_normal_equations`, which
+        constructs ``J^T J`` and ``J^T y`` via environment contractions with
+        memory independent of ``batch·M``. Kept here for numerical cross-checks
+        and the :mod:`tests.test_jacobian_sanity` oracle.
     """
     d = tt.num_cores
     G_k = tt.get_core(k)
@@ -90,7 +97,8 @@ def _build_jacobian(tt: TensorTrain, X: torch.Tensor, k: int) -> torch.Tensor:
     # jac: [b, j_pre, j_k_out, j_suf, r_l, i_k', j_k', r_r]
     #  = jac_core[b, j_pre, r_l, i_k', j_suf, r_r] * eye_j[j_k_out, j_k']
     jac = torch.einsum("bPaiQR,JK->bPJQaiKR", jac_core, eye_j)
-    # Reshape: Y axes (j_pre, j_k_out, j_suf) into M; G_k axes (r_l, i_k', j_k', r_r) into r_l*p_k*r_r.
+    # Reshape: Y axes (j_pre, j_k_out, j_suf) -> M;
+    # G_k axes (r_l, i_k', j_k', r_r) -> r_l*p_k*r_r.
     batch_dim = jac.shape[0]
     # Current shape: (b, J_pre, j_k_out, J_suf, r_l, i_k', j_k', r_r)
     # Collapse (J_pre, j_k_out, J_suf) -> M ; (r_l, i_k', j_k', r_r) -> P
@@ -98,6 +106,87 @@ def _build_jacobian(tt: TensorTrain, X: torch.Tensor, k: int) -> torch.Tensor:
     P = r_l * p_k * r_r
     jac = jac.reshape(batch_dim, M, P)
     return jac
+
+
+def _build_normal_equations(
+    tt: TensorTrain,
+    X: torch.Tensor,
+    Y: torch.Tensor,
+    k: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build ``(JᵀJ, Jᵀy)`` directly via environment contractions.
+
+    This replaces the explicit :func:`_build_jacobian` materialisation. Memory
+    scales with the *environment* blocks only — **independent of `batch · M`** —
+    enabling the solver to operate at BENCHMARK.md scale on CPU.
+
+    Derivation:
+        Writing the forward pass as
+        ``Y_pred[b, J_pre, j_out, J_suf] =
+            Σ_{a, I_suf, r'} L[b, J_pre, a, i', I_suf] · G_k[a, i', j_out, r']
+                           · R[r', I_suf, J_suf]``,
+        the Jacobian w.r.t. ``G_k[a, i', j', r']`` is
+        ``δ(j_out, j') · Σ_{I_suf} L[b,J_pre,a,i',I_suf] · R[r',I_suf,J_suf]``.
+
+        ``JᵀJ[a,i',j',r' ; a'',i'',j'',r''] = δ(j',j'') · H``
+        where   ``H[a,i',r' ; a'',i'',r''] =
+                  Σ_{I,I'} LL[a,i',I; a'',i'',I'] · RR[r',I; r'',I']``
+        with    ``LL = Σ_{b,J_pre} L·L``  and  ``RR = Σ_{J_suf} R·R``.
+
+        ``JᵀY[a,i',j',r'] = Σ_{I,J_suf} R[r',I,J_suf] · LY[a,i',I,j',J_suf]``
+        with    ``LY = Σ_{b,J_pre} L · Y``.
+    """
+    d = tt.num_cores
+    G_k = tt.get_core(k)
+    r_l, p_k, r_r = G_k.shape
+    i_k = tt.input_dims[k]
+    j_k = tt.output_dims[k]
+
+    batch = X.shape[0]
+    J_pre = prod(tt.output_dims[:k]) if k > 0 else 1
+    I_suf = prod(tt.input_dims[k + 1 : d]) if k + 1 < d else 1
+    J_suf = prod(tt.output_dims[k + 1 : d]) if k + 1 < d else 1
+
+    L = left_state_through(tt, X, k_stop=k).reshape(batch, J_pre, r_l, i_k, I_suf)
+    R = right_pure_product(tt, k_start=k + 1).reshape(r_r, I_suf, J_suf)
+
+    # -- LL[a,i',I; a'',i'',I'] = Σ_{b,J_pre} L · L  (independent of j_k, r_r).
+    # Shape: (r_l, i_k, I_suf, r_l, i_k, I_suf)
+    LL = torch.einsum("bPaiI,bPAjJ->aiIAjJ", L, L)
+
+    # -- RR[r', I; r'', I'] = Σ_{J_suf} R · R
+    # Shape: (r_r, I_suf, r_r, I_suf)
+    RR = torch.einsum("rIs,RJs->rIRJ", R, R)
+
+    # -- H[a,i',r' ; a'',i'',r''] = Σ_{I,I'} LL[a,i',I;a'',i'',I'] · RR[r',I;r'',I']
+    # Shape: (r_l, i_k, r_r, r_l, i_k, r_r)
+    H = torch.einsum("aiIAjJ,rIRJ->airAjR", LL, RR)
+
+    # -- JᵀJ = δ(j_k, j_k'') ⊗ H  →  embed into (P, P) with P = r_l*i_k*j_k*r_r.
+    # We keep the j_k dimension as the "slowest" inner axis of p_k so that the
+    # G_k flatten order is (r_l, i_k, j_k, r_r). J^T J is block-diagonal in j_k.
+    JtJ = torch.zeros(
+        (r_l, i_k, j_k, r_r, r_l, i_k, j_k, r_r),
+        dtype=L.dtype, device=L.device,
+    )
+    eye_j = torch.eye(j_k, dtype=L.dtype, device=L.device)
+    # Broadcast H into the (j, j'') identity slab.
+    # JtJ[a,i,j,r, A,I,J,R] = H[a,i,r,A,I,R] · δ(j,J)
+    JtJ = torch.einsum("airAjR,uv->aiurAjvR", H, eye_j).contiguous()
+    # The above einsum placed the j-axes as "u" and "v" at positions 2 and 6.
+    # Reshape to (P, P).
+    P = r_l * i_k * j_k * r_r
+    JtJ = JtJ.reshape(P, P)
+
+    # -- LY[a, i', I; j', J_suf] = Σ_{b, J_pre} L[b,J_pre,a,i',I] · Y[b,J_pre,j',J_suf]
+    Y_view = Y.reshape(batch, J_pre, j_k, J_suf)
+    LY = torch.einsum("bPaiI,bPjJ->aiIjJ", L, Y_view)
+
+    # -- JᵀY[a, i', j', r'] = Σ_{I, J_suf} R[r', I, J_suf] · LY[a, i', I, j', J_suf]
+    JtY = torch.einsum("rIJ,aiIjJ->aijr", R, LY).reshape(P)
+
+    return JtJ, JtY
+
 
 
 def solve_local_core(
@@ -134,21 +223,16 @@ def solve_local_core(
 
     target = _huber_clamp(Y) if clamp_target else Y
 
-    # Build Jacobian and flatten: [(batch*M), P].
-    jac = _build_jacobian(tt, X, k)                        # [batch, M, P]
-    batch = jac.shape[0]
-    J = jac.reshape(batch * tt.out_features, r_l * p_k * r_r)
-    rhs = target.reshape(batch * tt.out_features)
-
-    # Tikhonov-damped normal equations: (J^T J + λ I) vec(G_k) = J^T rhs.
-    # NaN-escalation loop per NUMERICAL_STABILITY §3.
+    # Matrix-free normal equations (MEMORY_ARENA.md): build (J^T J, J^T y) via
+    # environment contractions — memory scales with r^2·p²·I², NOT with batch·M.
+    # This is what lets the solver operate at BENCHMARK.md scale (1024×1024).
+    P = r_l * p_k * r_r
     current_lam = float(lam)
     attempts = 0
     while True:
-        JtJ = J.T @ J
+        JtJ, Jty = _build_normal_equations(tt, X, target, k)
         if current_lam > 0.0:
-            JtJ = JtJ + current_lam * torch.eye(JtJ.shape[0], dtype=JtJ.dtype, device=JtJ.device)
-        Jty = J.T @ rhs
+            JtJ = JtJ + current_lam * torch.eye(P, dtype=JtJ.dtype, device=JtJ.device)
         # Cholesky/solve; fall back to pinv if the system is numerically singular.
         try:
             vec_new = torch.linalg.solve(JtJ, Jty)
@@ -163,6 +247,8 @@ def solve_local_core(
             )
         current_lam = max(current_lam, 1.0e-12) * 10.0
 
+    # Physical axis in `vec_new` is laid out as (r_l, i_k, j_k, r_r); the TT
+    # convention stores p_k = i_k·j_k flattened in that same row-major order.
     G_new = vec_new.reshape(r_l, p_k, r_r)
 
     # SVD truncation per TENSOR_TOPOLOGY §6: matricize, SVD, truncate.

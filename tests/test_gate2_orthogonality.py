@@ -42,8 +42,8 @@ def test_gate2_left_orthogonalization_yields_identity() -> None:
     orthogonalize_left_to(tt, target)
     L = merged_left_block(tt, target).to(torch.float64)
     gram = L.T @ L
-    I = torch.eye(gram.shape[0], dtype=torch.float64)
-    err = float(torch.linalg.norm(gram - I, ord=float("inf")).item())
+    eye = torch.eye(gram.shape[0], dtype=torch.float64)
+    err = float(torch.linalg.norm(gram - eye, ord=float("inf")).item())
     assert err < 1.0e-7, f"||L^T L - I||_inf = {err:.3e} (expected < 1e-7)"
 
 
@@ -52,8 +52,8 @@ def test_gate2_right_orthogonalization_yields_identity() -> None:
     orthogonalize_right_to(tt, 0)
     R = merged_right_block(tt, 0).to(torch.float64)
     gram = R @ R.T
-    I = torch.eye(gram.shape[0], dtype=torch.float64)
-    err = float(torch.linalg.norm(gram - I, ord=float("inf")).item())
+    eye = torch.eye(gram.shape[0], dtype=torch.float64)
+    err = float(torch.linalg.norm(gram - eye, ord=float("inf")).item())
     assert err < 1.0e-7, f"||R R^T - I||_inf = {err:.3e} (expected < 1e-7)"
 
 

@@ -84,7 +84,7 @@ def test_gate3_single_sweep_reduces_mse_monotonically() -> None:
     )
 
 
-def test_gate3_wall_time_scales_sublinearly_in_N() -> None:
+def test_gate3_wall_time_scales_sublinearly_in_n() -> None:
     """Informational: DMRG per-sweep wall time scales well below N^3.
 
     Not a strict complexity proof (CPU reference impl with unoptimized einsum),

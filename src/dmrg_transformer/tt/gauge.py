@@ -99,7 +99,8 @@ def merged_left_block(tt: TensorTrain, k: int) -> torch.Tensor:
     """
     if k <= 0:
         # The trivial boundary block is just the scalar 1.
-        return torch.ones((1, 1), dtype=tt.get_core(0).dtype)
+        G0 = tt.get_core(0)
+        return torch.ones((1, 1), dtype=G0.dtype, device=G0.device)
     L = tt.get_core(0).reshape(tt.get_core(0).shape[1], tt.get_core(0).shape[2])
     for idx in range(1, k):
         G = tt.get_core(idx)
@@ -117,7 +118,8 @@ def merged_right_block(tt: TensorTrain, k: int) -> torch.Tensor:
     """
     d = tt.num_cores
     if k >= d - 1:
-        return torch.ones((1, 1), dtype=tt.get_core(-1).dtype)
+        G_last = tt.get_core(-1)
+        return torch.ones((1, 1), dtype=G_last.dtype, device=G_last.device)
     G_last = tt.get_core(k + 1)
     r_left, p, r_right = G_last.shape
     R = G_last.reshape(r_left, p * r_right)

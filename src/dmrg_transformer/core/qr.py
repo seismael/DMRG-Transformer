@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import torch
 
-from dmrg_transformer.core.precision import to_f32, to_f64
+from dmrg_transformer.core.precision import to_f64
 
 
 def qr_f64(matrix: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
