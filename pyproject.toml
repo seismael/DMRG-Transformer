@@ -8,13 +8,13 @@ version = "0.1.0"
 description = "Exact-solver Tensor-Train DMRG optimizer for Transformer-style architectures (no gradients)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "DMRG-Transformer Authors" }]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
     "numpy>=1.26",
