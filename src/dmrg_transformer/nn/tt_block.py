@@ -112,84 +112,174 @@ class TTBlock(nn.Module):
         *,
         lam: float = 1.0e-5,
         target_blend: float = 0.5,
+        attn_target_blend: float | None = None,
     ) -> dict[str, object]:
-        """Exact-solver update for one Pre-LN block.
+        """Exact-solver update for one Pre-LN block (full Q/K/V/W_out + FFN).
 
-        **Honest scope (this slice):** only the strictly-linear sub-paths are
-        swept — ``W_out`` (attention output projection) and the FFN's two TT
-        linears. The ``Q/K/V`` projections are left frozen because pulling a
-        target through ``softmax(QK^T)V`` requires a non-trivial
-        linearization not yet implemented; updating Q/K/V with a stale
-        target through the wrong Jacobian destabilizes the sweep (verified
-        empirically — see [tests/test_tt_block.py](../../../tests/test_tt_block.py)).
+        Update sequence:
+
+        1. Forward with cache.
+        2. Pull ``Y_target`` through residual #2 → FFN target. Sweep FFN.
+        3. Re-cache; pull ``Y_target - ffn_out_new`` through residual #1 →
+           target for ``attn_out``.
+        4. Pull ``attn_out_target`` back through ``W_out`` (Tikhonov pseudo-
+           inverse) to get a per-head ``context_target``.
+        5. Pull ``context_target`` back to ``A_target`` (target attention
+           pattern) using current ``V`` via
+           :meth:`TargetPropagator.solve_attention_pattern_target`.
+        6. Invert softmax to get ``scores_target = √d_h · log(A_target)``
+           via :meth:`TargetPropagator.softmax_target_to_scores`.
+        7. Pull ``scores_target`` back to ``Q_target / K_target`` via the
+           bilinear solver
+           :meth:`TargetPropagator.project_through_qk_bilinear`.
+        8. Pull ``context_target`` back to ``V_target`` through the *target*
+           attention pattern via
+           :meth:`TargetPropagator.project_through_attention_v`.
+        9. Sweep ``W_out`` (input = current context).
+        10. Sweep ``W_Q, W_K, W_V`` against their targets (parallel streams
+            on GPU per ``MEMORY_ARENA §5``).
+
+        All targets are blended with the current value at ``target_blend``
+        for damping (the joint Q,K problem is non-convex; per-step blending
+        prevents oscillation).
 
         Args:
             X: ``[batch, seq, embed_dim]`` input.
             Y_target: ``[batch, seq, embed_dim]`` target for the block output.
-            lam: Tikhonov damping inside each TT linear sweep.
-            target_blend: blending factor for intermediate-target damping.
+            lam: Tikhonov damping for each TT linear sweep.
+            target_blend: blending factor for intermediate targets ``∈ (0,1]``.
 
         Returns:
-            Dict with ``"ffn"`` (per-sublayer SweepReports), ``"attn"``
-            (only ``W_out`` final MSE; Q/K/V marked ``"frozen"``), and
+            Dict with ``"ffn"`` (per-sublayer SweepReports), ``"attn"`` (per-
+            projection final MSEs for Q, K, V, W_out), and
             ``"global_mse_before" / "global_mse_after"``.
         """
         cache = self.forward_with_cache(X)
         global_mse_before = float(torch.mean((cache["y"] - Y_target) ** 2).item())
 
-        # 1) Pull through residual #2: target for ffn_out.
+        # Step 1-2: FFN sweep.
         ffn_target = self.propagator.project_through_residual(Y_target, cache["h"])
-
-        # 2) Sweep FFN (both fc1 and fc2, with internal target propagation).
         ffn_reports = self.ffn.dmrg_step(
             cache["h_ln2"].reshape(-1, self.embed_dim),
             ffn_target.reshape(-1, self.embed_dim),
             lam=lam, target_blend=target_blend,
         )
 
-        # 3) Re-forward to get the post-ffn residual sum after the FFN update,
-        #    so the W_out sweep targets the most up-to-date attn_out target.
+        # Step 3: re-cache with updated FFN; derive attn_out target.
         cache_mid = self.forward_with_cache(X)
-        # Target for ffn_out is unchanged (residual pull-back from Y_target through h).
-        # Now compute target for h (which equals x + attn_out): we want
-        # h + ffn_new(LN2(h)) ≈ Y_target. With ffn updated, the target for h
-        # collapses to: h_target = Y_target - ffn_new(LN2(h_current)) (one-step
-        # local linearization), blended with current h.
         h_target_full = Y_target - cache_mid["ffn_out"]
         h_target = target_blend * h_target_full + (1.0 - target_blend) * cache_mid["h"]
-
-        # 4) Pull through residual #1: target for attn_out.
         attn_out_target = self.propagator.project_through_residual(h_target, cache["x"])
 
-        # 5) Recompute the context (softmax(QK^T)V) — this is W_out's input.
-        #    Q/K/V are frozen this slice so we just rerun the head contraction.
+        # Step 4: pull attn_out_target back through W_out → context_target.
+        W_out_dense = self.attn.W_out.to_dense_weight()
+        attn_out_minus_b = attn_out_target.reshape(-1, self.embed_dim)
+        if self.attn.W_out._has_bias:
+            attn_out_minus_b = attn_out_minus_b - self.attn.W_out._bias
+        context_target_full = self.propagator.project_through_linear(
+            W_out_dense, attn_out_minus_b,
+        ).reshape(*cache["x_ln1"].shape)
+
+        # Step 5-7: pull through softmax(QK^T)V → A_target → scores_target →
+        # Q_target, K_target. Use current Q, K, V.
         x_ln1_flat = cache["x_ln1"].reshape(-1, self.embed_dim)
         B, L, _ = cache["x_ln1"].shape
-        Q = self.attn.W_Q(x_ln1_flat).reshape(
-            B, L, self.attn.num_heads, self.attn.head_dim,
-        ).transpose(1, 2)
-        K = self.attn.W_K(x_ln1_flat).reshape(
-            B, L, self.attn.num_heads, self.attn.head_dim,
-        ).transpose(1, 2)
-        V = self.attn.W_V(x_ln1_flat).reshape(
-            B, L, self.attn.num_heads, self.attn.head_dim,
-        ).transpose(1, 2)
-        scale = self.attn.head_dim ** -0.5
-        scores = torch.einsum("bhqd,bhkd->bhqk", Q, K) * scale
-        attn_w = torch.softmax(scores, dim=-1)
-        context = torch.einsum("bhqk,bhkd->bhqd", attn_w, V).transpose(1, 2).reshape(
-            B, L, self.embed_dim,
-        )
-        context_flat = context.reshape(-1, self.embed_dim)
+        H = self.attn.num_heads
+        d_h = self.attn.head_dim
+        Q_curr = self.attn.W_Q(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
+        K_curr = self.attn.W_K(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
+        V_curr = self.attn.W_V(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
+        scale = d_h ** -0.5
+        scores_curr = torch.einsum("bhqd,bhkd->bhqk", Q_curr, K_curr) * scale
+        attn_w_curr = torch.softmax(scores_curr, dim=-1)
+        context_curr = torch.einsum(
+            "bhqk,bhkd->bhqd", attn_w_curr, V_curr,
+        )                                                       # [B, H, L, d_h]
+        # Per-head shaping of the context target.
+        context_target_heads = context_target_full.reshape(B, L, H, d_h).transpose(1, 2)
 
-        # 6) Sweep W_out: this is a pure linear least-squares step with
-        #    context as input and attn_out_target as target — guaranteed
-        #    not to increase the local MSE.
+        # 5. A target via current V.
+        A_target = self.propagator.solve_attention_pattern_target(
+            V_curr, context_target_heads, eps=1.0e-12,
+        )                                                       # [B, H, L, L]
+
+        # Mirror-descent step on the probability simplex: blend the target
+        # attention pattern with the current pattern *before* inverting
+        # softmax. This avoids the inverse-softmax pathology where rows of
+        # A_target with near-zero entries produce huge logits → score
+        # targets far from current scores → Q/K solutions far from current
+        # parameters → joint update overshoots and the global MSE explodes.
+        # The convex combination of two row-stochastic matrices stays on the
+        # simplex, so no re-projection is needed.
+        attn_blend = (
+            attn_target_blend if attn_target_blend is not None
+            else 0.5 * target_blend
+        )
+        A_blended = attn_blend * A_target + (1.0 - attn_blend) * attn_w_curr
+
+        # 6. Invert softmax (with √d_h scaling so scores_target = Q K^T target).
+        scores_target = self.propagator.softmax_target_to_scores(
+            A_blended, scale=1.0 / scale,
+        )                                                       # [B, H, L, L]
+
+        # 7. Bilinear pull-back to Q, K targets — Gauss-Seidel ordering:
+        #    solve Q* with K_curr fixed, then solve K* with the *new* Q*
+        #    fixed. This is the standard alternating least-squares fix for
+        #    the joint (non-convex) bilinear problem (SOLVER_MATH §4.3).
+        Q_target_heads, _ = self.propagator.project_through_qk_bilinear(
+            scores_target, Q_curr, K_curr,
+        )
+        _, K_target_heads = self.propagator.project_through_qk_bilinear(
+            scores_target, Q_target_heads, K_curr,
+        )
+
+        # 8. V target via the *blended* attention pattern (so the equation
+        #    A_blended · V = C_target is satisfied exactly at the target,
+        #    consistent with the same simplex-step used for Q,K).
+        V_target_heads = self.propagator.project_through_attention_v(
+            A_blended, context_target_heads,
+        )
+
+        # No additional parameter-level damping for Q/K — the simplex blend
+        # at the A level is the principled damping. V target is also
+        # consistent with the blended A. (Damping at the parameter level
+        # *after* damping at the A level was found to over-damp empirically.)
+
+        # Reshape back to [B, L, embed].
+        Y_Q_target = Q_target_heads.transpose(1, 2).reshape(B, L, self.embed_dim)
+        Y_K_target = K_target_heads.transpose(1, 2).reshape(B, L, self.embed_dim)
+        Y_V_target = V_target_heads.transpose(1, 2).reshape(B, L, self.embed_dim)
+
+        # Step 9: sweep W_out (input = current context).
+        context_full_curr = context_curr.transpose(1, 2).reshape(B, L, self.embed_dim)
         rep_Wout = self.attn.W_out.dmrg_step(
-            context_flat,
+            context_full_curr.reshape(-1, self.embed_dim),
             attn_out_target.reshape(-1, self.embed_dim),
             lam=lam,
         )
+
+        # Step 10: sweep Q, K, V projections under a trust-region accept
+        # rule. The Q,K bilinear update is non-convex, so even with mirror-
+        # descent damping a step can occasionally increase the global MSE.
+        # Snapshot W_Q/W_K/W_V state, run the sweep, then revert if the
+        # global MSE worsened.
+        snap_Q = {k: v.detach().clone() for k, v in self.attn.W_Q.state_dict().items()}
+        snap_K = {k: v.detach().clone() for k, v in self.attn.W_K.state_dict().items()}
+        snap_V = {k: v.detach().clone() for k, v in self.attn.W_V.state_dict().items()}
+        mse_before_attn = float(
+            torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item()
+        )
+        attn_results = self.attn.dmrg_step_projections(
+            cache["x_ln1"], Y_Q_target, Y_K_target, Y_V_target, lam=lam,
+        )
+        mse_after_attn = float(
+            torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item()
+        )
+        attn_accepted = mse_after_attn <= mse_before_attn
+        if not attn_accepted:
+            self.attn.W_Q.load_state_dict(snap_Q)
+            self.attn.W_K.load_state_dict(snap_K)
+            self.attn.W_V.load_state_dict(snap_V)
 
         cache_after = self.forward_with_cache(X)
         global_mse_after = float(torch.mean((cache_after["y"] - Y_target) ** 2).item())
@@ -197,8 +287,11 @@ class TTBlock(nn.Module):
         return {
             "ffn": ffn_reports,
             "attn": {
-                "Q": "frozen", "K": "frozen", "V": "frozen",
+                "Q": attn_results["Q"],
+                "K": attn_results["K"],
+                "V": attn_results["V"],
                 "W_out": rep_Wout.final_mse,
+                "accepted": attn_accepted,
             },
             "global_mse_before": global_mse_before,
             "global_mse_after": global_mse_after,

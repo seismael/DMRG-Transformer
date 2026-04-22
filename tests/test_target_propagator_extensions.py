@@ -116,3 +116,128 @@ def test_project_through_attention_v_shape_validation() -> None:
         prop.project_through_attention_v(
             torch.zeros(2, 2, 5, 5), torch.zeros(2, 3, 5, 4),
         )
+
+
+def test_solve_attention_pattern_target_recovers_a_when_v_is_full_rank() -> None:
+    """If ``C = A V`` and V is square + invertible, ``A_target ≈ A`` after
+    simplex projection (when A is already row-stochastic and well-separated).
+    """
+    torch.manual_seed(11)
+    B, H, L_q, L_k, d_h = 1, 1, 3, 4, 4  # L_k == d_h → V invertible
+    scores = torch.randn(B, H, L_q, L_k, dtype=torch.float64) * 2.0
+    A_true = torch.softmax(scores, dim=-1)
+    V = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    C = A_true @ V
+
+    prop = TargetPropagator(lam=1.0e-10)
+    A_recovered = prop.solve_attention_pattern_target(V, C, eps=1.0e-10)
+
+    # Result must be row-stochastic.
+    row_sums = A_recovered.sum(dim=-1)
+    assert torch.allclose(row_sums, torch.ones_like(row_sums), atol=1.0e-9)
+    assert (A_recovered >= 0).all()
+    err = (A_recovered - A_true).abs().max().item()
+    assert err < 1.0e-4, f"A pull-back error too large: {err:.3e}"
+
+
+def test_softmax_target_to_scores_round_trip() -> None:
+    """``softmax(softmax_target_to_scores(A)) == A`` (gauge-invariance check)."""
+    torch.manual_seed(12)
+    A = torch.softmax(torch.randn(2, 3, 4, 5, dtype=torch.float64), dim=-1)
+    prop = TargetPropagator()
+    scores = prop.softmax_target_to_scores(A, scale=1.0)
+    A_back = torch.softmax(scores, dim=-1)
+    err = (A_back - A).abs().max().item()
+    assert err < 1.0e-12, f"softmax inverse round-trip failed: {err:.3e}"
+    # Gauge: each row of the recovered logits must sum to zero.
+    row_sums = scores.sum(dim=-1)
+    assert torch.allclose(row_sums, torch.zeros_like(row_sums), atol=1.0e-12)
+
+
+def test_project_through_qk_bilinear_satisfies_equation_underdetermined() -> None:
+    """Underdetermined regime (L_k < d_h): Q* won't equal Q_true (many valid
+    Q* exist), but it MUST satisfy Q* K^T = S to high precision.
+    """
+    torch.manual_seed(13)
+    B, H, L_q, L_k, d_h = 2, 2, 4, 4, 6
+    Q_true = torch.randn(B, H, L_q, d_h, dtype=torch.float64)
+    K_true = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    scores = Q_true @ K_true.transpose(-2, -1)
+
+    prop = TargetPropagator(lam=1.0e-10)
+    Q_recovered, K_recovered = prop.project_through_qk_bilinear(
+        scores, Q_true, K_true,
+    )
+    res_q = (Q_recovered @ K_true.transpose(-2, -1) - scores).abs().max().item()
+    res_k = (Q_true @ K_recovered.transpose(-2, -1) - scores).abs().max().item()
+    assert res_q < 1.0e-6, f"Q solver residual: {res_q:.3e}"
+    assert res_k < 1.0e-6, f"K solver residual: {res_k:.3e}"
+
+
+def test_project_through_qk_bilinear_recovers_q_overdetermined() -> None:
+    """Overdetermined regime (L_k >= d_h): the system Q* K^T = S has a unique
+    solution (Q_true) with K fixed, so we should recover Q_true exactly.
+    """
+    torch.manual_seed(14)
+    B, H, L_q, L_k, d_h = 2, 2, 5, 8, 4   # L_k=8 > d_h=4
+    Q_true = torch.randn(B, H, L_q, d_h, dtype=torch.float64)
+    K_true = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    scores = Q_true @ K_true.transpose(-2, -1)
+
+    prop = TargetPropagator(lam=1.0e-10)
+    Q_recovered, _ = prop.project_through_qk_bilinear(scores, Q_true, K_true)
+    err = (Q_recovered - Q_true).abs().max().item()
+    assert err < 1.0e-4, f"Q pull-back error (overdetermined): {err:.3e}"
+
+
+def test_project_through_qk_bilinear_recovers_k_overdetermined() -> None:
+    """Symmetric overdetermined K test (L_q >= d_h)."""
+    torch.manual_seed(15)
+    B, H, L_q, L_k, d_h = 2, 2, 8, 5, 4
+    Q_true = torch.randn(B, H, L_q, d_h, dtype=torch.float64)
+    K_true = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    scores = Q_true @ K_true.transpose(-2, -1)
+
+    prop = TargetPropagator(lam=1.0e-10)
+    _, K_recovered = prop.project_through_qk_bilinear(scores, Q_true, K_true)
+    err = (K_recovered - K_true).abs().max().item()
+    assert err < 1.0e-4, f"K pull-back error (overdetermined): {err:.3e}"
+
+
+def test_full_attention_pull_back_pipeline_reproduces_context() -> None:
+    """End-to-end: starting from Q,K,V at the truth, the propagator pipeline
+    must produce (Q*, K*, V*) that, when forward-propagated, reproduce the
+    target context to within Tikhonov-precision. Parameters need not match
+    individually (alternating solver finds *a* valid joint solution), only
+    the forward equation does.
+
+    Conditioning requirements:
+      * V must be full-rank in the row space (``L_k <= d_h``) so the A pull-back
+        is unique.
+      * Q and K solvers in the overdetermined regime: ``L_q >= d_h`` AND
+        ``L_k >= d_h``. Combined with the above: ``L_k == d_h``.
+    """
+    torch.manual_seed(16)
+    B, H, L_q, L_k, d_h = 1, 1, 5, 4, 4   # V is 4x4 invertible; Q,K solvers exact
+    Q_true = torch.randn(B, H, L_q, d_h, dtype=torch.float64)
+    K_true = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    V_true = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    scale = d_h ** -0.5
+    A_true = torch.softmax(Q_true @ K_true.transpose(-2, -1) * scale, dim=-1)
+    C_true = A_true @ V_true
+
+    prop = TargetPropagator(lam=1.0e-12)
+    A_target = prop.solve_attention_pattern_target(V_true, C_true, eps=1.0e-14)
+    scores_target = prop.softmax_target_to_scores(A_target, scale=1.0 / scale)
+    Q_recovered, K_recovered = prop.project_through_qk_bilinear(
+        scores_target, Q_true, K_true,
+    )
+    V_recovered = prop.project_through_attention_v(A_target, C_true)
+
+    # Forward through the recovered Q,K,V and compare to C_true.
+    A_back = torch.softmax(
+        Q_recovered @ K_recovered.transpose(-2, -1) * scale, dim=-1,
+    )
+    C_back = A_back @ V_recovered
+    err = (C_back - C_true).abs().max().item()
+    assert err < 1.0e-3, f"end-to-end context recovery error: {err:.3e}"

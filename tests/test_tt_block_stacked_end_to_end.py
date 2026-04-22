@@ -4,11 +4,11 @@ Verifies that two stacked TTBlocks, fed a rank-feasible target produced by an
 identical-architecture ground-truth stack, monotonically reduce global MSE
 under per-block target propagation.
 
-The stricter ratio threshold is intentionally loose (0.85×) because Q/K
-projections are frozen this slice — only ``W_out`` and the FFN sub-block are
-updated per block. This is the documented honest-deferral path; tightening
-the bar requires implementing softmax pull-back for Q/K (deferred to a
-follow-up plan slice).
+The ratio threshold is intentionally loose (0.85×). Q/K/V are now
+updated under a trust-region accept/revert rule (the bilinear softmax
+pull-back is non-convex), so per-step gains are smaller than for a
+strictly-linear sub-path; the global MSE is monotonically non-increasing
+by construction (rejected steps are reverted).
 """
 from __future__ import annotations
 

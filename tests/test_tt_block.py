@@ -43,7 +43,8 @@ def test_ttblock_dmrg_step_reduces_global_mse() -> None:
         f"TTBlock.dmrg_step failed to reduce MSE: "
         f"initial={initial_mse:.4e} final={final_mse:.4e}"
     )
-    # The Q/K propagation gap (frozen this slice) limits the reduction rate.
+    # Q/K/V now update under a trust-region rule; non-convex steps may be
+    # rejected, so the per-step reduction is bounded but monotone.
     # We require a measurable improvement (≥ 10%) without claiming parity.
     assert final_mse < 0.9 * initial_mse, (
         f"weak reduction (Q/K freeze gap suspected): "

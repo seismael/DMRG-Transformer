@@ -205,3 +205,178 @@ class TargetPropagator:
         AtC = A.transpose(-2, -1) @ context_target        # [B, H, L_k, d_h]
         # torch.linalg.solve broadcasts over the leading batch dims.
         return torch.linalg.solve(AtA + self.lam * eye, AtC)
+
+    def solve_attention_pattern_target(
+        self,
+        V: torch.Tensor,
+        context_target: torch.Tensor,
+        *,
+        eps: float = 1.0e-6,
+    ) -> torch.Tensor:
+        """Recover a target attention pattern ``A_target`` from a context target.
+
+        Given ``C_target = A V`` with ``V`` fixed, solve per ``(B, H, L_q)`` row
+        ``a_q V = c_q`` for the ``[L_k]`` row vector ``a_q`` via Tikhonov-damped
+        normal equations, then project onto the probability simplex by
+        clamping to ``[eps, ∞)`` and renormalizing rows to sum to 1.
+
+        Args:
+            V: ``[B, H, L_k, d_h]`` value tensor (fixed).
+            context_target: ``[B, H, L_q, d_h]`` target context.
+            eps: minimum entry value before renormalization (keeps ``log`` finite).
+
+        Returns:
+            ``[B, H, L_q, L_k]`` row-stochastic attention pattern target.
+        """
+        if V.dim() != 4 or context_target.dim() != 4:
+            raise ValueError(
+                f"expected 4-D tensors; got V {tuple(V.shape)} and "
+                f"context_target {tuple(context_target.shape)}"
+            )
+        if V.shape[:2] != context_target.shape[:2] or V.shape[3] != context_target.shape[3]:
+            raise ValueError(
+                f"shape mismatch: V {tuple(V.shape)} vs context_target "
+                f"{tuple(context_target.shape)}"
+            )
+        # Solve a_q V = c_q  →  a_q* = c_q V^T (V V^T + λ I)^{-1}
+        VVt = V @ V.transpose(-2, -1)                     # [B, H, L_k, L_k]
+        eye = torch.eye(
+            VVt.shape[-1], dtype=VVt.dtype, device=VVt.device,
+        ).expand_as(VVt)
+        # context_target @ V^T : [B, H, L_q, L_k]
+        rhs = context_target @ V.transpose(-2, -1)
+        # Solve (V V^T + λ I)^T x^T = rhs^T  →  use solve with (LkxLk) on the right.
+        A_unconstrained = torch.linalg.solve(
+            VVt + self.lam * eye, rhs.transpose(-2, -1)
+        ).transpose(-2, -1)                                # [B, H, L_q, L_k]
+        # Project to probability simplex: clamp + renormalize per row.
+        A_clamped = A_unconstrained.clamp_min(eps)
+        return A_clamped / A_clamped.sum(dim=-1, keepdim=True)
+
+    def softmax_target_to_scores(
+        self,
+        A_target: torch.Tensor,
+        *,
+        scale: float = 1.0,
+        eps: float = 1.0e-12,
+    ) -> torch.Tensor:
+        """Invert ``softmax`` to get the score (logit) target up to per-row offset.
+
+        ``softmax`` is invariant under a per-row additive constant, so the
+        natural inverse is ``logits = log(A_target)`` with rows centered to
+        sum to zero (a canonical gauge choice that minimizes the logit norm).
+        The returned tensor is multiplied by ``scale`` so the caller can
+        recover scores at the ``Q K^T / √d`` convention by passing
+        ``scale = √d``.
+
+        Args:
+            A_target: ``[..., L_k]`` row-stochastic target.
+            scale: multiplier applied after the log; pass ``√d_h`` to obtain
+                the un-normalized ``Q K^T`` target.
+            eps: numerical floor before ``log``.
+
+        Returns:
+            ``[..., L_k]`` score target with rows summing to zero.
+        """
+        logits = torch.log(A_target.clamp_min(eps))
+        logits = logits - logits.mean(dim=-1, keepdim=True)
+        return logits * scale
+
+    def project_through_qk_bilinear(
+        self,
+        scores_target: torch.Tensor,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Decoupled bilinear pull-back of a score target ``S = Q K^T``.
+
+        Given a target ``S [B, H, L_q, L_k]`` for the un-normalized scores
+        ``Q K^T`` and current ``Q [B, H, L_q, d_h]``, ``K [B, H, L_k, d_h]``,
+        compute targets for ``Q`` and ``K`` independently by holding the
+        other factor fixed and using the appropriate Tikhonov-damped pseudo-
+        inverse (regime depends on whether ``L_k`` ≥ or < ``d_h``):
+
+        * **Overdetermined** (``L_k ≥ d_h``):
+          ``Q_target = S K (Kᵀ K + λ I_{d_h})^{-1}``
+        * **Underdetermined** (``L_k < d_h``):
+          ``Q_target = S (K Kᵀ + λ I_{L_k})^{-1} K``  (min-norm solution)
+
+        Symmetric formulas hold for the K solver (with Q's dim regime).
+
+        This is the standard alternating linearization of a bilinear form;
+        it is exact when one factor matches its target. When *both* targets
+        are applied jointly the result is a one-step linearization (joint
+        Q,K is non-convex). Convergence is ensured by the outer DMRG loop's
+        monotonicity proof composed with target-blend damping in the caller.
+
+        Args:
+            scores_target: ``[B, H, L_q, L_k]`` target for ``Q Kᵀ``.
+            Q: ``[B, H, L_q, d_h]`` current query tensor.
+            K: ``[B, H, L_k, d_h]`` current key tensor.
+
+        Returns:
+            Tuple ``(Q_target, K_target)`` of shapes
+            ``[B, H, L_q, d_h]`` and ``[B, H, L_k, d_h]``.
+        """
+        if scores_target.dim() != 4 or Q.dim() != 4 or K.dim() != 4:
+            raise ValueError(
+                f"expected 4-D tensors; got scores_target {tuple(scores_target.shape)}, "
+                f"Q {tuple(Q.shape)}, K {tuple(K.shape)}"
+            )
+        if (
+            scores_target.shape[:2] != Q.shape[:2]
+            or scores_target.shape[:2] != K.shape[:2]
+            or scores_target.shape[2] != Q.shape[2]
+            or scores_target.shape[3] != K.shape[2]
+            or Q.shape[3] != K.shape[3]
+        ):
+            raise ValueError(
+                f"shape mismatch: scores_target {tuple(scores_target.shape)}, "
+                f"Q {tuple(Q.shape)}, K {tuple(K.shape)}"
+            )
+        d_h = Q.shape[-1]
+        L_q = Q.shape[-2]
+        L_k = K.shape[-2]
+
+        # --- Q solver: Q* K^T = S, with K fixed.
+        if L_k >= d_h:
+            # Overdetermined: Q* = S K (K^T K + λI_{d_h})^{-1}
+            KtK = K.transpose(-2, -1) @ K                 # [B, H, d_h, d_h]
+            eye_q = torch.eye(d_h, dtype=Q.dtype, device=Q.device).expand_as(KtK)
+            SK = scores_target @ K                         # [B, H, L_q, d_h]
+            # Solve (KtK + λI)^T x^T = SK^T  ⇒  x = SK @ (KtK + λI)^{-1}.
+            Q_target = torch.linalg.solve(
+                (KtK + self.lam * eye_q).transpose(-2, -1),
+                SK.transpose(-2, -1),
+            ).transpose(-2, -1)
+        else:
+            # Underdetermined min-norm: Q* = S (K K^T + λI_{L_k})^{-1} K
+            KKt = K @ K.transpose(-2, -1)                  # [B, H, L_k, L_k]
+            eye_q = torch.eye(L_k, dtype=Q.dtype, device=Q.device).expand_as(KKt)
+            # inner = S (K K^T + λI)^{-1}  via  solve(KKt^T, S^T)^T
+            inner = torch.linalg.solve(
+                (KKt + self.lam * eye_q).transpose(-2, -1),
+                scores_target.transpose(-2, -1),
+            ).transpose(-2, -1)                            # [B, H, L_q, L_k]
+            Q_target = inner @ K                           # [B, H, L_q, d_h]
+
+        # --- K solver: Q K*^T = S, equivalently K* Q^T = S^T, with Q fixed.
+        S_T = scores_target.transpose(-2, -1)              # [B, H, L_k, L_q]
+        if L_q >= d_h:
+            QtQ = Q.transpose(-2, -1) @ Q                  # [B, H, d_h, d_h]
+            eye_k = torch.eye(d_h, dtype=Q.dtype, device=Q.device).expand_as(QtQ)
+            SQ = S_T @ Q                                    # [B, H, L_k, d_h]
+            K_target = torch.linalg.solve(
+                (QtQ + self.lam * eye_k).transpose(-2, -1),
+                SQ.transpose(-2, -1),
+            ).transpose(-2, -1)
+        else:
+            QQt = Q @ Q.transpose(-2, -1)                  # [B, H, L_q, L_q]
+            eye_k = torch.eye(L_q, dtype=Q.dtype, device=Q.device).expand_as(QQt)
+            inner = torch.linalg.solve(
+                (QQt + self.lam * eye_k).transpose(-2, -1),
+                S_T.transpose(-2, -1),
+            ).transpose(-2, -1)                            # [B, H, L_k, L_q]
+            K_target = inner @ Q                            # [B, H, L_k, d_h]
+
+        return Q_target, K_target

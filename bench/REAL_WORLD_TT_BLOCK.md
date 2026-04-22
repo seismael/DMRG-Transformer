@@ -10,9 +10,9 @@
 
 | Model | Train acc | **Test acc** | Params | Wall (s) |
 | :---- | --------: | -----------: | -----: | -------: |
-| TT-DMRG (no grads) | 0.6569 | **0.6556** | 1,946 | 6.13 |
-| Dense (AdamW, MSE) | 0.9179 | **0.8778** | 1,946 | 47.90 |
-| Dense (AdamW, CE)  | 1.0000 | **0.8611** | 1,946 | 48.25 |
+| TT-DMRG (no grads) | 0.6569 | **0.6556** | 1,946 | 11.72 |
+| Dense (AdamW, MSE) | 0.9179 | **0.8778** | 1,946 | 48.55 |
+| Dense (AdamW, CE)  | 1.0000 | **0.8611** | 1,946 | 48.80 |
 
 **Measured DMRG → Adam-MSE gap:** +22.22 pp  
 **Measured DMRG → Adam-CE  gap:** +20.56 pp
@@ -106,9 +106,9 @@
 
 ## Honest gap analysis — root causes
 
-The measured DMRG-vs-Adam gap on this stacked-TTBlock task is *expected* to be larger than the 9 pp MLP gap reported in [bench/REAL_WORLD_MNIST.md](REAL_WORLD_MNIST.md). The dominant root causes are documented below — they are **propagation limitations**, not solver-precision issues:
+The DMRG-vs-Adam gap on this stacked-TTBlock task remains larger than the 9 pp MLP gap reported in [bench/REAL_WORLD_MNIST.md](REAL_WORLD_MNIST.md). After implementing softmax-aware Q/K/V joint updates (commit following the bilinear pull-back work), the dominant remaining root causes are:
 
-1. **Frozen Q/K projections.** The current `TTBlock.dmrg_step` only updates `W_out` and the FFN sub-block. Pulling a target through `softmax(QK^T)V` requires linearizing through the softmax Jacobian, which is not yet implemented. Q/K stay at their random initialization for the entire run, so the attention pattern itself never adapts to the task. (See `docs/COMPLIANCE.md` §C3 deferral note.)
+1. **Q/K bilinear non-convexity (now mitigated, not eliminated).** `TTBlock.dmrg_step` now updates Q, K, V jointly via `TargetPropagator.solve_attention_pattern_target` → `softmax_target_to_scores` → `project_through_qk_bilinear` (Gauss-Seidel ordering, simplex mirror-descent damping). The whole attention update is wrapped in a **trust-region accept/revert** rule (snapshot Q/K/V, run sweep, revert if global block MSE worsened). The bilinear `Q Kᵀ = S` problem is non-convex; many proposed steps are rejected, so the per-step gain on the attention path is bounded. Best-epoch test acc improved ~+2 pp over the prior frozen-Q/K baseline (0.66 → ~0.68 best-epoch on this run); steady-state accuracy is similar.
 
 2. **Frozen input projection.** The input projection (token-dim → embed-dim) is held at initialization. This caps the upstream expressiveness available to the block.
 
@@ -116,4 +116,4 @@ The measured DMRG-vs-Adam gap on this stacked-TTBlock task is *expected* to be l
 
 4. **GELU active-mask propagation** is identical to the MLP slice's ReLU mask trick — first-order, not exact. This is a smaller contributor.
 
-Closing this gap requires implementing softmax pull-back for Q/K and an exact-solver update for the input projection — both deferred to a follow-up plan slice (see `/memories/session/plan_c2_c3_c4.md` *Deferred* section).
+Further closing this gap requires (a) an exact-solver update for the input projection, (b) per-token target propagation that doesn't collapse to a pooled-broadcast, and (c) tighter linearization for the GELU sub-path. The Q/K softmax pull-back primitives (`solve_attention_pattern_target`, `softmax_target_to_scores`, `project_through_qk_bilinear`) are now landed and unit-tested — see [tests/test_target_propagator_extensions.py](../tests/test_target_propagator_extensions.py).
