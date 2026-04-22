@@ -89,3 +89,77 @@ class TargetPropagator:
         lam_I = self.lam * torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
         inv_term = torch.linalg.solve(gram + lam_I, W)  # [in, out]
         return downstream_target @ inv_term.T
+
+    def project_through_residual(
+        self,
+        downstream_target: torch.Tensor,
+        branch_input: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pull a target back through a residual connection ``y = x + f(x)``.
+
+        Given ``y_target`` for the residual sum and ``x = branch_input`` (the
+        skip-connection tensor), the target the non-skip branch ``f(x)`` must
+        produce is exactly ``y_target - x``. No damping is required since the
+        residual is identity-linear in ``f(x)``.
+
+        Args:
+            downstream_target: ``[..., features]`` target for the residual sum.
+            branch_input: ``[..., features]`` activation entering the residual
+                (the skip-connection tensor).
+
+        Returns:
+            ``[..., features]`` — target the non-skip branch ``f(x)`` must hit.
+        """
+        if downstream_target.shape != branch_input.shape:
+            raise ValueError(
+                f"shape mismatch: downstream_target {tuple(downstream_target.shape)} vs "
+                f"branch_input {tuple(branch_input.shape)}"
+            )
+        return downstream_target - branch_input
+
+    def project_through_layernorm(
+        self,
+        downstream_target: torch.Tensor,
+        x_pre_ln: torch.Tensor,
+        *,
+        eps: float = 1.0e-5,
+        gamma: torch.Tensor | None = None,
+        beta: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Pull a target back through ``LayerNorm`` using current-row statistics.
+
+        LayerNorm computes ``y = γ * (x - μ(x)) / σ(x) + β`` per token, where
+        ``μ, σ`` are the row mean / std of ``x`` over the last dim. To pull a
+        target ``y_target`` back to a pre-LN target ``x_target`` we use the
+        current row stats from ``x_pre_ln`` as a local linearization:
+
+            x_target ≈ ((y_target - β) / γ) * σ(x_pre_ln) + μ(x_pre_ln)
+
+        This is exact when ``x_target`` shares the row-stats of ``x_pre_ln``.
+        Affine params default to ``γ=1, β=0`` (the frozen-LN slice).
+
+        Args:
+            downstream_target: ``[..., features]`` post-LN target.
+            x_pre_ln: ``[..., features]`` pre-LN activation (provides μ, σ).
+            eps: numerical stabilizer matching ``nn.LayerNorm``'s default.
+            gamma: optional ``[features]`` affine scale (default 1).
+            beta: optional ``[features]`` affine bias (default 0).
+
+        Returns:
+            ``[..., features]`` — pre-LN target.
+        """
+        if downstream_target.shape != x_pre_ln.shape:
+            raise ValueError(
+                f"shape mismatch: downstream_target {tuple(downstream_target.shape)} vs "
+                f"x_pre_ln {tuple(x_pre_ln.shape)}"
+            )
+        mu = x_pre_ln.mean(dim=-1, keepdim=True)
+        var = x_pre_ln.var(dim=-1, keepdim=True, unbiased=False)
+        sigma = torch.sqrt(var + eps)
+        normalized_target = (
+            downstream_target - beta if beta is not None else downstream_target
+        )
+        if gamma is not None:
+            # Avoid divide-by-zero on degenerate γ rows.
+            normalized_target = normalized_target / (gamma + self.lam)
+        return normalized_target * sigma + mu

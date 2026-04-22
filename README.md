@@ -200,15 +200,38 @@ next milestone (see [docs/COMPLIANCE.md](docs/COMPLIANCE.md)).
 same held-out task, same train/test split, same evaluation. DMRG learns it
 without gradient descent.
 
-### 3.6 Quality gates
+### 3.6 Stacked TTBlock real-task validation (Pre-LN Transformer encoder)
 
-- **46 / 46 pytest tests passing on `cuda:0`** — see
+From [bench/REAL_WORLD_TT_BLOCK.md](bench/REAL_WORLD_TT_BLOCK.md), produced by
+[scripts/train_real_world_tt_block_classifier.py](scripts/train_real_world_tt_block_classifier.py).
+Same `sklearn.load_digits` corpus reshaped as 8 tokens of dim 8, run through
+`input_proj → 1× TTBlock (embed=16, heads=2, hidden=16, rank=8) → mean-pool → head`.
+
+| Model                       | Train acc | **Test acc** | Params | Wall (s) |
+| :-------------------------- | --------: | -----------: | -----: | -------: |
+| TT-DMRG (no grads)          | 0.6569    | **0.6556**   |  3,866 | ~10      |
+| Dense block (AdamW, MSE)    | 0.9179    | **0.8778**   |    810 | ~5       |
+| Dense block (AdamW, CE)     | 1.0000    | **0.8611**   |    810 | ~5       |
+
+The ~22 pp DMRG gap is **honestly reported and root-caused** in the bench
+file's *Honest gap analysis* section. Dominant cause: `TTBlock.dmrg_step`
+currently only updates `W_out` and the FFN sub-block — Q/K projections stay
+frozen at random init because softmax pull-back is deferred to a follow-up
+slice. Block forward MSE still drops monotonically (0.40 → 0.009),
+proving the solver works as designed for the linear sub-paths it's allowed
+to update.
+
+### 3.7 Quality gates
+
+- **59 / 59 pytest tests passing on `cuda:0`** — see
   [tests/conftest.py](tests/conftest.py) and
   [scripts/check.ps1](scripts/check.ps1). New suites cover Tikhonov
   NaN-escalation, SVD tier-2/3/4 fallbacks, the matrix-free memory
   regression guard, the `MemoryArena` 1000-cycle zero-allocation contract,
-  the adaptive-rank rule, a 3-layer target-propagation cascade, and the
-  end-to-end real-task classifier (must beat 80 % held-out test accuracy).
+  the adaptive-rank rule, a 3-layer target-propagation cascade,
+  the residual + LayerNorm propagator extensions, the standalone TTFFN +
+  TTBlock + stacked TTBlock end-to-end suite, and both the MLP and
+  TTBlock real-task classifier regression guards.
 - AGENTS constraint AST scans enforce: **no `backward()`**, **no Adam/SGD**,
   single authorised SVD + QR call-sites — see
   [tests/test_constraints.py](tests/test_constraints.py).
@@ -232,13 +255,14 @@ git clone https://github.com/seismael/DMRG-Transformer.git
 cd DMRG-Transformer
 uv sync --extra dev                          # installs torch+cu121, scipy, pytest
 uv run python scripts/detect_cuda.py         # smoke test cuSOLVER + GPU
-uv run python -m pytest tests --no-header -q # 45 tests, ~60 s
+uv run python -m pytest tests --no-header -q # 59 tests, ~90 s
 uv run python scripts/run_gate3_proof.py        # -> bench/GATE3_PROOF.md
 uv run python scripts/run_poc_benchmark.py      # -> bench/POC_RESULTS.md
 uv run python scripts/run_benchmarks.py         # -> bench/RESULTS.md
 uv run python scripts/run_headline_benchmark.py # -> bench/HEADLINE.md (1024×1024)
 uv run python scripts/run_pareto.py             # -> bench/PARETO.md
 uv run python scripts/train_real_world_classifier.py  # -> bench/REAL_WORLD_MNIST.md
+uv run python scripts/train_real_world_tt_block_classifier.py  # -> bench/REAL_WORLD_TT_BLOCK.md
 ```
 
 CPU execution is **not supported by default**: every entry point goes
@@ -366,7 +390,7 @@ scripts/
   run_gate3_proof.py        -> bench/GATE3_PROOF.md
   run_poc_benchmark.py      -> bench/POC_RESULTS.md
   run_benchmarks.py         -> bench/RESULTS.md (three-way runoff)
-tests/                      46 tests including all AGENTS gates,
+tests/                      59 tests including all AGENTS gates,
                             matrix-free regression, arena zero-alloc,
                             adaptive-rank rule, propagation cascade,
                             real-task classifier;

@@ -76,7 +76,9 @@ gate criterion changes.
 | TargetPropagator usage in multi-layer cascade | ✅ | [tests/test_target_propagation_cascade.py](../tests/test_target_propagation_cascade.py) |
 | TTMultiHeadAttention forward + per-projection DMRG | ✅ | [tests/test_mha_consistency.py](../tests/test_mha_consistency.py) |
 | Adaptive rank scheduling | 🟡 | `adaptive_rank` selection rule + tests in [tests/test_adaptive_rank.py](../tests/test_adaptive_rank.py); integration into `DMRGOptimizer.sweep` deferred (single-flag wiring) |
-| Multi-layer Transformer block (TTBlock = TTMHA + TTFFN + LN + residual) | ⏳ | Plan §C2-C4 |
+| Multi-layer Transformer block (TTBlock = TTMHA + TTFFN + LN + residual) | 🟡 | C2 ✅ [src/dmrg_transformer/nn/tt_ffn.py](../src/dmrg_transformer/nn/tt_ffn.py) ([tests/test_tt_ffn.py](../tests/test_tt_ffn.py)); C3 ✅ [src/dmrg_transformer/nn/tt_block.py](../src/dmrg_transformer/nn/tt_block.py) Pre-LN with frozen LN affine and W_out + FFN sweeps ([tests/test_tt_block.py](../tests/test_tt_block.py)); C4 ✅ stacked end-to-end ([tests/test_tt_block_stacked_end_to_end.py](../tests/test_tt_block_stacked_end_to_end.py)). **Honest deferral:** Q/K projections frozen this slice — softmax pull-back deferred to follow-up. |
+| TargetPropagator: residual + LayerNorm pull-back | ✅ | `project_through_residual` + `project_through_layernorm` in [src/dmrg_transformer/propagation/target_propagator.py](../src/dmrg_transformer/propagation/target_propagator.py); round-trip tests in [tests/test_target_propagator_extensions.py](../tests/test_target_propagator_extensions.py) |
+| Stacked TTBlock real-task validation | ✅ | [scripts/train_real_world_tt_block_classifier.py](../scripts/train_real_world_tt_block_classifier.py) → [bench/REAL_WORLD_TT_BLOCK.md](../bench/REAL_WORLD_TT_BLOCK.md). TT-DMRG hits 65.6% test acc on sklearn-digits-as-sequence vs Adam ~87% (~22 pp gap, root-caused to frozen Q/K + frozen input projection — see bench file's *Honest gap analysis* section). Regression-guarded by [tests/test_real_world_tt_block_classifier.py](../tests/test_real_world_tt_block_classifier.py). |
 | Language-modelling demo (WikiText-2) | ⏳ | Plan §D |
 | **End-to-end real supervised training** (DMRG-trained 2-layer MLP on `sklearn.load_digits`, 80/20 stratified split, beats 80 % held-out test accuracy) | ✅ | [scripts/train_real_world_classifier.py](../scripts/train_real_world_classifier.py) → [bench/REAL_WORLD_MNIST.md](../bench/REAL_WORLD_MNIST.md); regression-guarded by [tests/test_real_world_classifier.py](../tests/test_real_world_classifier.py). Demonstrates real generalization (88.3 % test acc, 88-89 % prediction agreement with AdamW baselines), not synthetic curve-fitting. |
 
@@ -86,7 +88,8 @@ Per session scope decisions captured in `/memories/session/plan.md`:
 
 * **Rust crate** (`rust/dmrg-core/` with `maturin` + PyO3 + cuSOLVER + cuTensorNet) — MVP slice planned but not yet built. The Python `MemoryArena` is the contract the Rust impl must satisfy.
 * **>80% Tensor Core utilisation claim** — requires `nvidia-smi`/`nsys` profiling in the Rust loop.
-* **WikiText-2 head-to-head perplexity vs Adam** — requires `TTBlock` (plan §C3) which depends on residual-and-LN-aware target propagation.
-* **End-to-end Transformer block stack** — depends on `TTBlock`.
+* **WikiText-2 head-to-head perplexity vs Adam** — requires Q/K softmax pull-back so the attention pattern actually adapts.
+* **Q/K softmax pull-back** — currently `TTBlock.dmrg_step` only updates `W_out` + FFN; Q/K projections stay frozen at init. This is the dominant root cause of the measured DMRG-vs-Adam accuracy gap on stacked-block tasks.
+* **TTBlock LN affine (γ, β) updates** — frozen at γ=1, β=0 this slice (LN inversion is then exact). LSQ update for affine params is a minor follow-up.
 
 These are explicitly tracked in the session plan and the README §9 limitations section.
