@@ -7,7 +7,7 @@
 [![CUDA 12.1](https://img.shields.io/badge/CUDA-12.1-76b900.svg)](https://developer.nvidia.com/cuda-12-1-0-download-archive)
 [![PyTorch 2.5](https://img.shields.io/badge/PyTorch-2.5.1%2Bcu121-ee4c2c.svg)](https://pytorch.org)
 [![Status](https://img.shields.io/badge/Status-Alpha_PoC-orange.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-29%2F29_GPU-brightgreen.svg)](#6-validation-gates)
+[![Tests](https://img.shields.io/badge/tests-74%2F74_GPU-brightgreen.svg)](#6-validation-gates)
 [![Gates](https://img.shields.io/badge/AGENTS_gates-1%2F2%2F3_validated-brightgreen.svg)](bench/GATE3_PROOF.md)
 
 > **Status: initial GPU-only proof-of-concept.** The reference implementation
@@ -232,12 +232,16 @@ the solver works as designed.
 
 ### 3.7 Quality gates
 
-- **67 / 67 pytest tests passing on `cuda:0`** — see
+- **74 / 74 pytest tests passing on `cuda:0`** — see
   [tests/conftest.py](tests/conftest.py) and
   [scripts/check.ps1](scripts/check.ps1). New suites cover Tikhonov
   NaN-escalation, SVD tier-2/3/4 fallbacks, the matrix-free memory
   regression guard, the `MemoryArena` 1000-cycle zero-allocation contract,
-  the adaptive-rank rule, a 3-layer target-propagation cascade,
+  the adaptive-rank rule **and its end-to-end wiring through `DMRGOptimizer.sweep`**
+  ([tests/test_adaptive_rank_wiring.py](tests/test_adaptive_rank_wiring.py)),
+  the **TTBlock LN affine OLS update** under a trust-region accept/revert rule
+  ([tests/test_ttblock_ln_affine.py](tests/test_ttblock_ln_affine.py)),
+  a 3-layer target-propagation cascade,
   the residual + LayerNorm propagator extensions, the standalone TTFFN +
   TTBlock + stacked TTBlock end-to-end suite, and both the MLP and
   TTBlock real-task classifier regression guards.
@@ -464,11 +468,21 @@ production LLM backbone**. Honest limitations:
    training loop is scaffolded
    ([propagation/target_propagator.py](src/dmrg_transformer/propagation/target_propagator.py))
    but not yet benchmarked on a language-modelling workload.
-4. **Rank selection.** A discarded-mass adaptive rule is now available
-   (`adaptive_rank` in [src/dmrg_transformer/core/svd.py](src/dmrg_transformer/core/svd.py)),
-   but is not yet wired through the full DMRG sweep — `max_rank` remains
-   the operative hyperparameter end-to-end. See
-   [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the full spec-coverage matrix.
+4. **Rank selection.** A discarded-mass adaptive rule
+   (`adaptive_rank` in [src/dmrg_transformer/core/svd.py](src/dmrg_transformer/core/svd.py))
+   is now **wired end-to-end** through `DMRGOptimizer(adaptive_threshold=...)`
+   → `solve_local_core(adaptive_threshold=...)` → local SVD truncation, with
+   parity and pruning regression tests in
+   [tests/test_adaptive_rank_wiring.py](tests/test_adaptive_rank_wiring.py).
+   Default behaviour (`adaptive_threshold=None`) is bit-exact with the
+   fixed-`max_rank` baseline so all prior benchmark numbers reproduce.
+   See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the full spec-coverage matrix.
+5. **LayerNorm affine in `TTBlock`.** `γ, β` are stored as **buffers** (not
+   `nn.Parameter`, preserving AGENTS Constraint 1) and an opt-in per-feature
+   OLS update (`enable_ln_affine=True`) refits them under a trust-region
+   accept/revert rule. Default behaviour is bit-exact with the previous
+   frozen-LN block. Tests in
+   [tests/test_ttblock_ln_affine.py](tests/test_ttblock_ln_affine.py).
 
 **We welcome contributions** from the tensor-network, HPC, and ML
 communities — especially:

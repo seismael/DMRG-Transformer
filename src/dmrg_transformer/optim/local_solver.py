@@ -18,7 +18,7 @@ from math import prod
 
 import torch
 
-from dmrg_transformer.core.svd import robust_svd, truncate
+from dmrg_transformer.core.svd import adaptive_rank, robust_svd, truncate
 from dmrg_transformer.tt.environments import left_state_through, right_pure_product
 from dmrg_transformer.tt.tensor_train import TensorTrain
 
@@ -257,6 +257,7 @@ def solve_local_core(
     lam: float = 0.0,
     direction: str = "left",
     clamp_target: bool = True,
+    adaptive_threshold: float | None = None,
 ) -> LocalSolveResult:
     """Exact least-squares + SVD-truncated update for core ``k``.
 
@@ -320,7 +321,14 @@ def solve_local_core(
         # Matricize along the left index: M = [r_l * p_k, r_r].
         C = G_new.reshape(r_l * p_k, r_r)
         full = robust_svd(C)
-        trunc = truncate(full, max_rank)
+        if adaptive_threshold is not None:
+            r_eff = adaptive_rank(
+                full.S, rel_threshold=adaptive_threshold,
+                min_rank=1, max_rank=max_rank,
+            )
+        else:
+            r_eff = max_rank
+        trunc = truncate(full, r_eff)
         if k + 1 < tt.num_cores:
             # Gauge shift: keep U as the new left-orthogonal core, push S·Vh right.
             U = trunc.U.reshape(r_l, p_k, trunc.S.shape[0])
@@ -343,7 +351,14 @@ def solve_local_core(
         # Matricize along the right index: M = [r_l, p_k * r_r].
         C = G_new.reshape(r_l, p_k * r_r)
         full = robust_svd(C)
-        trunc = truncate(full, max_rank)
+        if adaptive_threshold is not None:
+            r_eff = adaptive_rank(
+                full.S, rel_threshold=adaptive_threshold,
+                min_rank=1, max_rank=max_rank,
+            )
+        else:
+            r_eff = max_rank
+        trunc = truncate(full, r_eff)
         if k - 1 >= 0:
             V_core = trunc.Vh.reshape(trunc.S.shape[0], p_k, r_r)
             tt.update_core(k, V_core.to(dtype=G_k.dtype))

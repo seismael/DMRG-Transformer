@@ -32,6 +32,12 @@ class DMRGOptimizer:
         max_rank: TT-rank bound enforced after each local SVD truncation.
         lam: Tikhonov damping factor (NUMERICAL_STABILITY §3). Default ``1e-5``.
         clamp_target: apply Huber ±5σ clamp to targets (NUMERICAL_STABILITY §5).
+        adaptive_threshold: when set (e.g. ``1e-4``), each local SVD picks the
+            smallest rank ``r ≤ max_rank`` whose discarded squared-singular-
+            value mass is at most ``adaptive_threshold`` of the total
+            (plan §C5 / discarded-mass rule). When ``None`` (default), every
+            local truncation uses the fixed ``max_rank`` for backward
+            compatibility with all existing benchmarks and tests.
     """
 
     def __init__(
@@ -40,12 +46,16 @@ class DMRGOptimizer:
         *,
         lam: float = 1.0e-5,
         clamp_target: bool = True,
+        adaptive_threshold: float | None = None,
     ) -> None:
         if max_rank <= 0:
             raise ValueError(f"max_rank must be positive, got {max_rank}")
         self.max_rank = int(max_rank)
         self.lam = float(lam)
         self.clamp_target = bool(clamp_target)
+        self.adaptive_threshold = (
+            None if adaptive_threshold is None else float(adaptive_threshold)
+        )
 
     # -- IDMRGOptimizer ---------------------------------------------------------
 
@@ -63,6 +73,7 @@ class DMRGOptimizer:
             lam=self.lam,
             direction=direction,
             clamp_target=self.clamp_target,
+            adaptive_threshold=self.adaptive_threshold,
         )
 
     def truncate_svd(self, exact_core: torch.Tensor, max_rank: int) -> torch.Tensor:
