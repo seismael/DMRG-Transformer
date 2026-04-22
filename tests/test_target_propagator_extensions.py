@@ -85,3 +85,34 @@ def test_project_through_layernorm_shape_mismatch_raises() -> None:
     prop = TargetPropagator()
     with __import__("pytest").raises(ValueError):
         prop.project_through_layernorm(torch.zeros(4, 8), torch.zeros(4, 16))
+
+
+def test_project_through_attention_v_recovers_v_when_context_is_av() -> None:
+    """Given A and a context produced as ``A @ V_true``, the V pull-back must
+    recover ``V_true`` (up to the Tikhonov damping). Use a well-conditioned A
+    (random softmax over short L_k) and small λ.
+    """
+    torch.manual_seed(3)
+    B, H, L_q, L_k, d_h = 2, 2, 5, 5, 4
+    scores = torch.randn(B, H, L_q, L_k, dtype=torch.float64)
+    A = torch.softmax(scores, dim=-1)
+    V_true = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    context = A @ V_true
+
+    prop = TargetPropagator(lam=1.0e-8)
+    V_recovered = prop.project_through_attention_v(A, context)
+
+    err = (V_recovered - V_true).abs().max().item()
+    assert err < 1e-4, f"V pull-back error too large: {err:.3e}"
+
+
+def test_project_through_attention_v_shape_validation() -> None:
+    prop = TargetPropagator()
+    with __import__("pytest").raises(ValueError):
+        prop.project_through_attention_v(
+            torch.zeros(2, 5, 5), torch.zeros(2, 2, 5, 4),
+        )
+    with __import__("pytest").raises(ValueError):
+        prop.project_through_attention_v(
+            torch.zeros(2, 2, 5, 5), torch.zeros(2, 3, 5, 4),
+        )

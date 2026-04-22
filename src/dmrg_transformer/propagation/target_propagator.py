@@ -163,3 +163,45 @@ class TargetPropagator:
             # Avoid divide-by-zero on degenerate γ rows.
             normalized_target = normalized_target / (gamma + self.lam)
         return normalized_target * sigma + mu
+
+    def project_through_attention_v(
+        self,
+        attn_weights: torch.Tensor,
+        context_target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pull a context target back to a per-head V target through ``A @ V``.
+
+        For scaled dot-product attention the context is ``C = A V`` where
+        ``A = softmax(Q K^T / √d)`` is held fixed (this is the *softmax-aware
+        V pull-back* — Q and K are not updated by this method). We solve
+        ``A V = C_target`` for ``V`` per (batch, head) via Tikhonov-damped
+        normal equations:
+
+            V_target = (Aᵀ A + λ I)⁻¹ Aᵀ C_target
+
+        Args:
+            attn_weights: ``[batch, heads, L_q, L_k]`` softmax weights.
+            context_target: ``[batch, heads, L_q, d_h]`` target for ``A V``.
+
+        Returns:
+            ``[batch, heads, L_k, d_h]`` per-head V target.
+        """
+        if attn_weights.dim() != 4 or context_target.dim() != 4:
+            raise ValueError(
+                f"expected 4-D tensors; got attn_weights {tuple(attn_weights.shape)} "
+                f"and context_target {tuple(context_target.shape)}"
+            )
+        if attn_weights.shape[:3] != context_target.shape[:3]:
+            raise ValueError(
+                f"leading shape mismatch: attn_weights {tuple(attn_weights.shape)} vs "
+                f"context_target {tuple(context_target.shape)}"
+            )
+        # Per-(batch, head) normal equations, batched.
+        A = attn_weights                                  # [B, H, L_q, L_k]
+        AtA = A.transpose(-2, -1) @ A                     # [B, H, L_k, L_k]
+        eye = torch.eye(
+            AtA.shape[-1], dtype=AtA.dtype, device=AtA.device,
+        ).expand_as(AtA)
+        AtC = A.transpose(-2, -1) @ context_target        # [B, H, L_k, d_h]
+        # torch.linalg.solve broadcasts over the leading batch dims.
+        return torch.linalg.solve(AtA + self.lam * eye, AtC)

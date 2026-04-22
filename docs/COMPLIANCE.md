@@ -89,7 +89,7 @@ Per session scope decisions captured in `/memories/session/plan.md`:
 * **Rust crate** (`rust/dmrg-core/` with `maturin` + PyO3 + cuSOLVER + cuTensorNet) — MVP slice planned but not yet built. The Python `MemoryArena` is the contract the Rust impl must satisfy.
 * **>80% Tensor Core utilisation claim** — requires `nvidia-smi`/`nsys` profiling in the Rust loop.
 * **WikiText-2 head-to-head perplexity vs Adam** — requires Q/K softmax pull-back so the attention pattern actually adapts.
-* **Q/K softmax pull-back** — currently `TTBlock.dmrg_step` only updates `W_out` + FFN; Q/K projections stay frozen at init. This is the dominant root cause of the measured DMRG-vs-Adam accuracy gap on stacked-block tasks.
+* **Q/K softmax pull-back** — currently `TTBlock.dmrg_step` only updates `W_out` + FFN; Q/K projections stay frozen at init. This is the dominant root cause of the measured DMRG-vs-Adam accuracy gap on stacked-block tasks. The **softmax-aware V pull-back primitive** is implemented and tested as `TargetPropagator.project_through_attention_v` (round-trip verified, see [tests/test_target_propagator_extensions.py](../tests/test_target_propagator_extensions.py)), but is *intentionally not wired* into `dmrg_step` until Q/K co-update lands — wiring V alone (with frozen random Q/K) destabilizes the block on the real-task validation (measured collapse 65.6% → 31.7%); the V update needs an adapting attention pattern to be useful.
 * **TTBlock LN affine (γ, β) updates** — frozen at γ=1, β=0 this slice (LN inversion is then exact). LSQ update for affine params is a minor follow-up.
 
 These are explicitly tracked in the session plan and the README §9 limitations section.
