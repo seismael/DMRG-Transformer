@@ -188,6 +188,64 @@ def _build_normal_equations(
     return JtJ, JtY
 
 
+def _build_block_normal_equations(
+    tt: TensorTrain,
+    X: torch.Tensor,
+    Y: torch.Tensor,
+    k: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Block-diagonal form of the normal equations (memory-efficient solver path).
+
+    The full ``JᵀJ`` is block-diagonal in ``j_k`` (the local output index): the
+    :func:`_build_normal_equations` derivation shows
+    ``JᵀJ = δ(j_k, j_k') ⊗ H``. Materialising the full ``P × P`` matrix is
+    therefore wasteful by a factor of ``j_k`` in memory and ``j_k²`` in FLOPs.
+
+    This function returns ``(H, RHS)`` where:
+
+    * ``H`` has shape ``(P_block, P_block)`` with ``P_block = r_l · i_k · r_r``
+      — the shared per-``j_k``-block normal-equations matrix.
+    * ``RHS`` has shape ``(P_block, j_k)`` — one right-hand side column per
+      output slice.
+
+    The caller then does **one** factorisation of ``H + λ I`` and back-substitutes
+    ``j_k`` columns simultaneously via ``torch.linalg.solve``. Memory drops from
+    ``O(r⁴ · p²)`` to ``O(r⁴ · i_k²)`` — the difference between OOM and a few MB
+    at BENCHMARK.md scale (1024×1024, rank=32: 1 GB → 8 MB).
+    """
+    d = tt.num_cores
+    G_k = tt.get_core(k)
+    r_l, p_k, r_r = G_k.shape
+    i_k = tt.input_dims[k]
+    j_k = tt.output_dims[k]
+
+    batch = X.shape[0]
+    J_pre = prod(tt.output_dims[:k]) if k > 0 else 1
+    I_suf = prod(tt.input_dims[k + 1 : d]) if k + 1 < d else 1
+    J_suf = prod(tt.output_dims[k + 1 : d]) if k + 1 < d else 1
+
+    L = left_state_through(tt, X, k_stop=k).reshape(batch, J_pre, r_l, i_k, I_suf)
+    R = right_pure_product(tt, k_start=k + 1).reshape(r_r, I_suf, J_suf)
+
+    # H[a, i, r ; A, I, R] = Σ_{b, J_pre, I_suf, I_suf'}
+    #   L[b,J_pre,a,i,I_suf] · L[b,J_pre,A,I,I_suf']
+    #   · Σ_{J_suf} R[r,I_suf,J_suf] · R[R,I_suf',J_suf]
+    # Compute LL and RR factors then contract.
+    LL = torch.einsum("bPaiI,bPAjJ->aiIAjJ", L, L)  # (r_l, i_k, I_suf, r_l, i_k, I_suf)
+    RR = torch.einsum("rIs,RJs->rIRJ", R, R)        # (r_r, I_suf, r_r, I_suf)
+    H = torch.einsum("aiIAjJ,rIRJ->airAjR", LL, RR)
+    P_block = r_l * i_k * r_r
+    H = H.reshape(P_block, P_block)
+
+    # RHS[a, i, r ; j_k] = Σ_{b, J_pre, I_suf, J_suf}
+    #   L[b,J_pre,a,i,I_suf] · R[r,I_suf,J_suf] · Y[b,J_pre,j_k,J_suf]
+    Y_view = Y.reshape(batch, J_pre, j_k, J_suf)
+    LY = torch.einsum("bPaiI,bPjJ->aiIjJ", L, Y_view)              # (r_l,i_k,I_suf,j_k,J_suf)
+    RHS = torch.einsum("rIJ,aiIjJ->airj", R, LY)                    # (r_l,i_k,r_r,j_k)
+    RHS = RHS.reshape(P_block, j_k)
+
+    return H, RHS
+
 
 def solve_local_core(
     tt: TensorTrain,
@@ -223,22 +281,27 @@ def solve_local_core(
 
     target = _huber_clamp(Y) if clamp_target else Y
 
-    # Matrix-free normal equations (MEMORY_ARENA.md): build (J^T J, J^T y) via
-    # environment contractions — memory scales with r^2·p²·I², NOT with batch·M.
-    # This is what lets the solver operate at BENCHMARK.md scale (1024×1024).
-    P = r_l * p_k * r_r
+    # Block-diagonal matrix-free normal equations: JᵀJ is block-diagonal in j_k
+    # (TENSOR_TOPOLOGY §5 derivation). We build only the shared per-block H of
+    # shape (r_l·i_k·r_r)² and a stacked RHS (P_block, j_k), then do ONE solve
+    # for all j_k columns. Memory: O(r⁴·i_k²) instead of O(r⁴·p²·j_k²) — this
+    # is what unblocks BENCHMARK.md scale (1024×1024, rank=32).
+    j_k = tt.output_dims[k]
+    i_k = tt.input_dims[k]
+    P_block = r_l * i_k * r_r
     current_lam = float(lam)
     attempts = 0
     while True:
-        JtJ, Jty = _build_normal_equations(tt, X, target, k)
+        H, RHS = _build_block_normal_equations(tt, X, target, k)
         if current_lam > 0.0:
-            JtJ = JtJ + current_lam * torch.eye(P, dtype=JtJ.dtype, device=JtJ.device)
-        # Cholesky/solve; fall back to pinv if the system is numerically singular.
+            H = H + current_lam * torch.eye(P_block, dtype=H.dtype, device=H.device)
+        # Solve H @ X_blocks = RHS for X_blocks of shape (P_block, j_k) — one
+        # factorisation, j_k back-substitutions handled internally.
         try:
-            vec_new = torch.linalg.solve(JtJ, Jty)
+            X_blocks = torch.linalg.solve(H, RHS)
         except (torch._C._LinAlgError, RuntimeError):  # type: ignore[attr-defined]
-            vec_new = torch.linalg.pinv(JtJ) @ Jty
-        if torch.isfinite(vec_new).all():
+            X_blocks = torch.linalg.pinv(H) @ RHS
+        if torch.isfinite(X_blocks).all():
             break
         attempts += 1
         if attempts > 6:
@@ -247,9 +310,10 @@ def solve_local_core(
             )
         current_lam = max(current_lam, 1.0e-12) * 10.0
 
-    # Physical axis in `vec_new` is laid out as (r_l, i_k, j_k, r_r); the TT
-    # convention stores p_k = i_k·j_k flattened in that same row-major order.
-    G_new = vec_new.reshape(r_l, p_k, r_r)
+    # Reassemble: X_blocks has axes (a, i, r ; j) per the block layout. The
+    # canonical G_k axis order is (r_l, i_k, j_k, r_r) row-major, i.e. p_k
+    # indexed by (i, j) row-major. Permute (a, i, r, j) → (a, i, j, r).
+    G_new = X_blocks.reshape(r_l, i_k, r_r, j_k).permute(0, 1, 3, 2).reshape(r_l, p_k, r_r)
 
     # SVD truncation per TENSOR_TOPOLOGY §6: matricize, SVD, truncate.
     if direction == "left":

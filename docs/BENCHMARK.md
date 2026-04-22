@@ -1,5 +1,39 @@
 ### Empirical Benchmark: The Optimization Engine Teardown
 
+> **Reconciliation note (2026-04, post-Phase A1):** The headline language
+> below ("DMRG converges to the exact mathematical minimum matching the
+> Dense Solver in a single sweep, 10–20× faster than Adam *and* dense
+> inversion") was authored before measurements existed. With the matrix-free
+> block-diagonal solver in place, the spec is now runnable end-to-end on a
+> 2 GiB MX150. The **measured** behaviour (`bench/HEADLINE.md`) is:
+>
+> | Method | MSE | Time | Peak GPU mem |
+> | :--- | ---: | ---: | ---: |
+> | Adam (500 iters, lr=0.01) | 3.73e-02 | 196.6 s | 0.16 GB |
+> | Dense Exact (`lstsq`) | 3.73e-02 | 0.78 s | 0.09 GB |
+> | TT-DMRG (rank=32, 2 sweeps) | 4.15e-01 | 265.3 s | 2.22 GB |
+>
+> Two clarifications follow:
+>
+> 1. **"Matches dense MSE" holds only on TT-rank-bounded targets.** The
+>    headline target `Y = sin(X·W) + 0.1·η` is full-rank; rank-32 TT cannot
+>    represent it perfectly, so DMRG produces the rank-32 Pareto-optimal
+>    point (~10× higher MSE than dense) — see `bench/PARETO.md` for the
+>    rank/MSE curve and `bench/GATE3_PROOF.md` for the parity proof on
+>    rank-bounded targets.
+> 2. **The "10–20× faster" claim does not hold at this scale on this
+>    hardware.** Dense `lstsq` is one cuSOLVER call; DMRG is `O(d·n·r³)`
+>    per sweep with non-trivial constant factors. The asymptotic advantage
+>    appears when `N ≫ r` and `r` is small relative to `N` — at 1024×1024
+>    with rank 32 on the MX150 the constants dominate. The Phase IV Rust +
+>    cuSOLVER + cuTensorNet microkernel is the path to closing the
+>    constant-factor gap.
+>
+> The reference Python script below is preserved for historical context;
+> the canonical, instrumented runner is now
+> [`scripts/run_headline_benchmark.py`](../scripts/run_headline_benchmark.py)
+> (3 seeds, warmup, mean ± std, peak memory, FLOPs).
+
 To scientifically validate the DMRG-Transformer framework, we must benchmark it against the physics of current hardware. The following production-grade Python script acts as an end-to-end empirical proof. 
 
 It isolates a single layer of a neural network ($1024 \times 1024$ parameters) and pits three optimization paradigms against each other:

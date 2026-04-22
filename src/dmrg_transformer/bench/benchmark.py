@@ -65,6 +65,11 @@ class BenchmarkResult:
     mse: float
     time_sec: float
     parameters: int
+    peak_mem_gb: float = 0.0
+    mse_std: float = 0.0
+    time_std: float = 0.0
+    seeds: int = 1
+    flops: int = 0  # measured forward-pass FLOPs per call (best-effort)
 
 
 class OptimizationBenchmark:
@@ -125,70 +130,176 @@ class OptimizationBenchmark:
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
 
+    def _peak_mem_gb(self) -> float:
+        if self.device.type != "cuda":
+            return 0.0
+        return float(torch.cuda.max_memory_allocated(self.device)) / 1e9
+
+    def _reset_peak_mem(self) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+    def _aggregate(
+        self,
+        name: str,
+        params: int,
+        mses: list[float],
+        times: list[float],
+        peak_mem: float,
+        flops: int = 0,
+    ) -> BenchmarkResult:
+        import statistics
+        n = len(mses)
+        return BenchmarkResult(
+            name=name,
+            mse=statistics.mean(mses),
+            time_sec=statistics.mean(times),
+            parameters=params,
+            peak_mem_gb=peak_mem,
+            mse_std=statistics.pstdev(mses) if n > 1 else 0.0,
+            time_std=statistics.pstdev(times) if n > 1 else 0.0,
+            seeds=n,
+            flops=flops,
+        )
+
     # -- 1. Adam (on GPU) ------------------------------------------------------
 
-    def run_adam(self, iterations: int = 500, lr: float = 0.01) -> BenchmarkResult:
-        torch.manual_seed(0)
-        W = torch.randn(
-            self.in_features, self.out_features,
-            dtype=torch.float64, device=self.device,
-        ) * 0.01
-        m = torch.zeros_like(W)
-        v = torch.zeros_like(W)
-        beta1, beta2, eps = 0.9, 0.999, 1e-8
+    def run_adam(
+        self,
+        iterations: int = 500,
+        lr: float = 0.01,
+        *,
+        warmup: int = 1,
+        seeds: int = 1,
+    ) -> BenchmarkResult:
+        def _one(seed: int) -> tuple[float, float]:
+            torch.manual_seed(seed)
+            W = torch.randn(
+                self.in_features, self.out_features,
+                dtype=torch.float64, device=self.device,
+            ) * 0.01
+            m = torch.zeros_like(W)
+            v = torch.zeros_like(W)
+            beta1, beta2, eps = 0.9, 0.999, 1e-8
 
-        self._sync()
-        t0 = time.perf_counter()
-        for t in range(1, iterations + 1):
-            pred = self.X @ W
-            error = pred - self.Y
-            grad = self.X.T @ error / self.batch_size
-            m.mul_(beta1).add_(grad, alpha=1 - beta1)
-            v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-            m_hat = m / (1 - beta1**t)
-            v_hat = v / (1 - beta2**t)
-            W.sub_(lr * m_hat / (v_hat.sqrt() + eps))
-        self._sync()
-        elapsed = time.perf_counter() - t0
-        mse = float(torch.mean((self.X @ W - self.Y) ** 2).item())
-        return BenchmarkResult("Gradient Descent (Adam)", mse, elapsed, self.total_dense_params)
+            self._sync()
+            t0 = time.perf_counter()
+            for t in range(1, iterations + 1):
+                pred = self.X @ W
+                error = pred - self.Y
+                grad = self.X.T @ error / self.batch_size
+                m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                m_hat = m / (1 - beta1**t)
+                v_hat = v / (1 - beta2**t)
+                W.sub_(lr * m_hat / (v_hat.sqrt() + eps))
+            self._sync()
+            elapsed = time.perf_counter() - t0
+            mse = float(torch.mean((self.X @ W - self.Y) ** 2).item())
+            return mse, elapsed
+
+        # Warmup runs (discarded).
+        for _ in range(max(0, warmup)):
+            _one(seed=999)
+        self._reset_peak_mem()
+        mses: list[float] = []
+        times: list[float] = []
+        for s in range(seeds):
+            mse, dt = _one(seed=s)
+            mses.append(mse)
+            times.append(dt)
+        peak = self._peak_mem_gb()
+        # FLOPs per call: 500 iters * (matmul X@W + X.T@error + a few elementwise) ≈ 2*500*B*N*M*2.
+        flops_per_call = 2 * iterations * self.batch_size * self.in_features * self.out_features * 2
+        return self._aggregate(
+            "Gradient Descent (Adam)",
+            self.total_dense_params, mses, times, peak, flops=flops_per_call,
+        )
 
     # -- 2. Dense Exact Solver (on GPU) ----------------------------------------
 
-    def run_dense_exact(self) -> BenchmarkResult:
-        self._sync()
-        t0 = time.perf_counter()
-        W = torch.linalg.lstsq(self.X, self.Y).solution
-        self._sync()
-        elapsed = time.perf_counter() - t0
-        mse = float(torch.mean((self.X @ W - self.Y) ** 2).item())
-        return BenchmarkResult(
-            "Dense Exact Solver (O(N^3))", mse, elapsed, self.total_dense_params
+    def run_dense_exact(self, *, warmup: int = 1, seeds: int = 1) -> BenchmarkResult:
+        def _one() -> tuple[float, float]:
+            self._sync()
+            t0 = time.perf_counter()
+            W = torch.linalg.lstsq(self.X, self.Y).solution
+            self._sync()
+            elapsed = time.perf_counter() - t0
+            mse = float(torch.mean((self.X @ W - self.Y) ** 2).item())
+            return mse, elapsed
+
+        for _ in range(max(0, warmup)):
+            _one()
+        self._reset_peak_mem()
+        mses: list[float] = []
+        times: list[float] = []
+        for _ in range(seeds):
+            mse, dt = _one()
+            mses.append(mse)
+            times.append(dt)
+        peak = self._peak_mem_gb()
+        # Dense lstsq cost ~ 2 * B * N * M (forming normal eqn) + N^3 (solve).
+        flops_per_call = (
+            2 * self.batch_size * self.in_features * self.out_features
+            + self.in_features ** 3
+        )
+        return self._aggregate(
+            "Dense Exact Solver (O(N^3))",
+            self.total_dense_params, mses, times, peak, flops=flops_per_call,
         )
 
     # -- 3. TT-DMRG (on GPU) ---------------------------------------------------
 
-    def run_dmrg(self, num_sweeps: int = 2) -> BenchmarkResult:
-        torch.manual_seed(0)
-        W_init = torch.randn(
-            self.in_features, self.out_features,
-            dtype=torch.float64, device=self.device,
-        ) * 0.01
+    def run_dmrg(
+        self,
+        num_sweeps: int = 2,
+        *,
+        warmup: int = 1,
+        seeds: int = 1,
+    ) -> BenchmarkResult:
+        def _one(seed: int) -> tuple[float, float]:
+            torch.manual_seed(seed)
+            W_init = torch.randn(
+                self.in_features, self.out_features,
+                dtype=torch.float64, device=self.device,
+            ) * 0.01
 
-        self._sync()
-        t0 = time.perf_counter()
-        tt, _ = TensorTrain.from_dense(
-            W_init, self.input_dims, self.output_dims, max_rank=self.rank,
+            self._sync()
+            t0 = time.perf_counter()
+            tt, _ = TensorTrain.from_dense(
+                W_init, self.input_dims, self.output_dims, max_rank=self.rank,
+            )
+            opt = DMRGOptimizer(max_rank=self.rank, lam=1.0e-6, clamp_target=False)
+            for _ in range(num_sweeps):
+                opt.sweep(tt, self.X, self.Y)
+            self._sync()
+            elapsed = time.perf_counter() - t0
+
+            Y_pred = self.X @ tt.to_dense()
+            mse = float(torch.mean((Y_pred - self.Y) ** 2).item())
+            return mse, elapsed
+
+        for _ in range(max(0, warmup)):
+            _one(seed=999)
+        self._reset_peak_mem()
+        mses: list[float] = []
+        times: list[float] = []
+        for s in range(seeds):
+            mse, dt = _one(seed=s)
+            mses.append(mse)
+            times.append(dt)
+        peak = self._peak_mem_gb()
+        # DMRG cost per sweep: ~ 2 * d * (B*r²·p² + r³·p) — O(d·n·r³) per AGENTS Phase III.
+        d = len(self.input_dims)
+        avg_p = max(self.input_dims + self.output_dims)
+        flops_per_call = num_sweeps * 2 * d * (
+            self.batch_size * (self.rank ** 2) * (avg_p ** 2)
+            + (self.rank ** 3) * avg_p
         )
-        opt = DMRGOptimizer(max_rank=self.rank, lam=1.0e-6, clamp_target=False)
-        for _ in range(num_sweeps):
-            opt.sweep(tt, self.X, self.Y)
-        self._sync()
-        elapsed = time.perf_counter() - t0
-
-        Y_pred = self.X @ tt.to_dense()
-        mse = float(torch.mean((Y_pred - self.Y) ** 2).item())
-        return BenchmarkResult("TT-DMRG Exact Sweep", mse, elapsed, self.total_tt_params)
+        return self._aggregate(
+            "TT-DMRG Exact Sweep",
+            self.total_tt_params, mses, times, peak, flops=flops_per_call,
+        )
 
 
 def execute(

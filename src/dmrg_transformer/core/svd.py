@@ -110,3 +110,34 @@ def discarded_energy(full_S: torch.Tensor, kept_rank: int) -> float:
         return 0.0
     tail = full_S[kept_rank:]
     return float(torch.sqrt(torch.sum(tail.to(torch.float64) ** 2)).item())
+
+
+def adaptive_rank(
+    full_S: torch.Tensor,
+    *,
+    rel_threshold: float,
+    min_rank: int = 1,
+    max_rank: int | None = None,
+) -> int:
+    """Choose the smallest rank ``r`` whose discarded tail mass is below
+    ``rel_threshold`` of the total spectral mass (squared singular values).
+
+    This is the rank-selection rule for adaptive scheduling (plan §C5):
+    grow rank when the tail is heavy, shrink when it is light. Bounded by
+    ``[min_rank, max_rank]``.
+    """
+    if full_S.numel() == 0:
+        return min_rank
+    s64 = full_S.to(torch.float64)
+    total = float(torch.sum(s64 * s64).item())
+    if total <= 0.0:
+        return min_rank
+    cap = max_rank if max_rank is not None else int(s64.numel())
+    cumulative = torch.cumsum(s64 * s64, dim=0)
+    # discarded[r] = total - cumulative[r-1]   (r=1..n)
+    for r in range(min_rank, min(cap, int(s64.numel())) + 1):
+        kept = float(cumulative[r - 1].item())
+        discarded = max(0.0, total - kept)
+        if discarded / total <= rel_threshold:
+            return r
+    return min(cap, int(s64.numel()))

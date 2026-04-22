@@ -13,14 +13,14 @@ from dmrg_transformer.core.device import describe_device, require_cuda  # noqa: 
 
 CONFIGS = [
     # (in, out, batch, rank, adam_iters, sweeps)
-    # The 1024x1024 BENCHMARK.md target is gated on AGENTS Phase IV
-    # (Rust + cuSOLVER microkernel with double-buffered environment
-    # blocks); a pure PyTorch sweep at that size OOMs on a 2 GiB GPU
-    # because every sweep instantiates the full O(r^2 p^2) normal-equation
-    # tensor. See docs/BENCHMARK.md and docs/MEMORY_ARENA.md.
-    (64,  64,  512,  8, 500, 3),
-    (144, 144, 512,  8, 500, 2),
-    (256, 256, 1024, 8, 500, 2),
+    # 1024x1024 is the BENCHMARK.md headline — runnable since the matrix-free
+    # block-diagonal solver landed (see docs/COMPLIANCE.md Phase A1). For
+    # rigorous mean±std + memory + FLOPs at the headline scale, use
+    # `python scripts/run_headline_benchmark.py` (writes bench/HEADLINE.md).
+    (64,   64,   512,  8,  500, 3),
+    (144,  144,  512,  8,  500, 2),
+    (256,  256,  1024, 8,  500, 2),
+    (1024, 1024, 2048, 32, 500, 2),
 ]
 
 

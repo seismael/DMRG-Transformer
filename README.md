@@ -56,7 +56,8 @@ execution).
 | 4 | Prove the **performance advantage over gradient descent** on a TT-native target.  |   ✅    |
 | 5 | Run end-to-end on CUDA (cuSOLVER + PyTorch float64).                              |   ✅    |
 | 6 | Ship the AGENTS Phase IV Rust + CUDA microkernel for production scale.            |   🧭 future work |
-| 7 | Demonstrate a 1024×1024 [docs/BENCHMARK.md](docs/BENCHMARK.md) sweep + full LLM training. | 🧭 requires Phase IV |
+| 7 | Demonstrate a 1024×1024 [docs/BENCHMARK.md](docs/BENCHMARK.md) sweep on a 2 GiB GPU.  |   ✅ ([bench/HEADLINE.md](bench/HEADLINE.md)) |
+| 8 | Full LLM training loop with target propagation across stacked TT-blocks.          | 🧭 future work |
 
 ---
 
@@ -323,14 +324,16 @@ mathematics, validates the math on a real GPU end-to-end, and demonstrates
 the performance story on the method's native domain. It is **not yet a
 production LLM backbone**. Honest limitations:
 
-1. **Scale.** The pure-PyTorch local solver still allocates the
-   `(r²·p) × (r²·p)` normal-equation tensor on-device per core. That caps
-   the practical reference at roughly `144 × 144` to `256 × 256` layers on
-   a 2 GiB GPU; at `1024 × 1024` it OOMs. The
-   [docs/BENCHMARK.md](docs/BENCHMARK.md) `1024 × 1024` target **requires
-   AGENTS Phase IV**: a Rust microkernel binding `cuSOLVER` (SVD/QR) and
-   `cuTensorNet` (contractions), with double-buffered environment blocks
-   per [docs/MEMORY_ARENA.md](docs/MEMORY_ARENA.md).
+1. **Scale.** The local solver now exploits the block-diagonal structure of
+   `JᵀJ` in the trailing index `j_k` and only materialises the shared
+   `(r·i_k·r) × (r·i_k·r)` Gram matrix per core. This unblocks `1024 × 1024`
+   sweeps on a 2 GiB GPU (≈11 s/sweep, peak 2.2 GB — see
+   [bench/HEADLINE.md](bench/HEADLINE.md)). The remaining gap to the
+   `O(d·n·r³)` asymptotic is wall-time vs. dense at *small* `N` on
+   consumer hardware; closing it requires AGENTS Phase IV (Rust +
+   `cuSOLVER` + `cuTensorNet` + double-buffered arenas per
+   [docs/MEMORY_ARENA.md](docs/MEMORY_ARENA.md)). A pure-Python prototype
+   of the arena lives in [src/dmrg_transformer/core/arena.py](src/dmrg_transformer/core/arena.py).
 2. **Hardware.** Reference benchmarks were collected on an MX150 (2 GiB,
    sm_61) — the smallest CUDA-capable card we had access to. Tensor-core
    utilisation targets (Gate 4, `> 80 %`) need a modern Ampere/Hopper card
@@ -342,9 +345,11 @@ production LLM backbone**. Honest limitations:
    training loop is scaffolded
    ([propagation/target_propagator.py](src/dmrg_transformer/propagation/target_propagator.py))
    but not yet benchmarked on a language-modelling workload.
-4. **Rank selection.** Adaptive rank schedules (growing `r` with residual
-   energy) are not implemented; `max_rank` is currently a static
-   hyperparameter.
+4. **Rank selection.** A discarded-mass adaptive rule is now available
+   (`adaptive_rank` in [src/dmrg_transformer/core/svd.py](src/dmrg_transformer/core/svd.py)),
+   but is not yet wired through the full DMRG sweep — `max_rank` remains
+   the operative hyperparameter end-to-end. See
+   [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for the full spec-coverage matrix.
 
 **We welcome contributions** from the tensor-network, HPC, and ML
 communities — especially:
