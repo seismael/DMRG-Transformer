@@ -63,14 +63,16 @@ execution).
 
 ## 3. Achieved Results (reproducible, CUDA 12.1, float64)
 
-All numbers below come from one of three reproducible scripts that ship in
-this repo:
+All numbers below come from reproducible scripts that ship in this repo.
+Full spec↔implementation traceability lives in [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
 
 | Script | Output |
 | :----- | :----- |
-| [scripts/run_gate3_proof.py](scripts/run_gate3_proof.py)         | [bench/GATE3_PROOF.md](bench/GATE3_PROOF.md) |
-| [scripts/run_poc_benchmark.py](scripts/run_poc_benchmark.py)     | [bench/POC_RESULTS.md](bench/POC_RESULTS.md) |
-| [scripts/run_benchmarks.py](scripts/run_benchmarks.py)           | [bench/RESULTS.md](bench/RESULTS.md) |
+| [scripts/run_gate3_proof.py](scripts/run_gate3_proof.py)             | [bench/GATE3_PROOF.md](bench/GATE3_PROOF.md) |
+| [scripts/run_poc_benchmark.py](scripts/run_poc_benchmark.py)         | [bench/POC_RESULTS.md](bench/POC_RESULTS.md) |
+| [scripts/run_benchmarks.py](scripts/run_benchmarks.py)               | [bench/RESULTS.md](bench/RESULTS.md) |
+| [scripts/run_headline_benchmark.py](scripts/run_headline_benchmark.py) | [bench/HEADLINE.md](bench/HEADLINE.md) |
+| [scripts/run_pareto.py](scripts/run_pareto.py)                       | [bench/PARETO.md](bench/PARETO.md) |
 
 Reference hardware: NVIDIA GeForce MX150 (sm_61, 2.0 GiB), CUDA 12.1.
 
@@ -124,11 +126,44 @@ DMRG is rank-constrained; on a target outside the TT-rank-r manifold it
 trades MSE for parameter compression — an Eckart–Young–Mirsky guarantee,
 not a failure mode.
 
-### 3.4 Quality gates
+### 3.4 1024×1024 headline (matrix-free solver, 2 GiB GPU)
 
-- **29 / 29 pytest tests passing on `cuda:0`** — see
+From [bench/HEADLINE.md](bench/HEADLINE.md). 1024×1024 layer, batch=2048,
+rank=32, target = `sin(X·W)+0.1·η`. 1 warmup + 3 measurement seeds, mean±std.
+
+| Method                          |        MSE        |   Time (s)   | Peak GPU mem |    Params  |
+| :------------------------------ | ----------------: | -----------: | -----------: | ---------: |
+| Adam (500 it, lr=0.01)          | `3.7348e-02`      | 196.6 ± 18.7 |   0.16 GB    | 1,048,576  |
+| Dense Exact (cuSOLVER, O(N³))   | `3.7344e-02`      |  0.78 ± 0.00 |   0.09 GB    | 1,048,576  |
+| **TT-DMRG (2 sweeps, r=32)**    | **`4.1531e-01`**  | 265.3 ± 7.6  | **2.22 GB**  | **33,024** |
+
+* **Compression: 31.8×** (1,048,576 → 33,024 parameters).
+* The block-diagonal matrix-free solver in
+  [src/dmrg_transformer/optim/local_solver.py](src/dmrg_transformer/optim/local_solver.py)
+  unblocks 1024×1024 sweeps on a 2 GiB GPU — previously OOM.
+* On this *full-rank* target, DMRG is rank-constrained and produces the
+  Pareto-optimal point at its parameter budget. The full rank/MSE curve
+  is in [bench/PARETO.md](bench/PARETO.md):
+
+| Rank | TT params | Compression | DMRG MSE     | Gap to dense |
+| ---: | --------: | ----------: | -----------: | -----------: |
+|    2 |       192 |      341.3× | `4.38e-01`   | 7.95×        |
+|    8 |     2,304 |       28.4× | `4.17e-01`   | 7.56×        |
+|   32 |    16,896 |        3.9× | `2.96e-01`   | 5.37×        |
+|   64 |    33,280 |        2.0× | `2.00e-01`   | 3.63×        |
+
+The MSE gap closes monotonically with `r`, exactly as the Eckart–Young–Mirsky
+bound predicts. On TT-rank-bounded targets (Gate 3 setup) DMRG matches the
+dense optimum to machine precision; see [bench/GATE3_PROOF.md](bench/GATE3_PROOF.md).
+
+### 3.5 Quality gates
+
+- **45 / 45 pytest tests passing on `cuda:0`** — see
   [tests/conftest.py](tests/conftest.py) and
-  [scripts/check.ps1](scripts/check.ps1).
+  [scripts/check.ps1](scripts/check.ps1). New suites cover Tikhonov
+  NaN-escalation, SVD tier-2/3/4 fallbacks, the matrix-free memory
+  regression guard, the `MemoryArena` 1000-cycle zero-allocation contract,
+  the adaptive-rank rule, and a 3-layer target-propagation cascade.
 - AGENTS constraint AST scans enforce: **no `backward()`**, **no Adam/SGD**,
   single authorised SVD + QR call-sites — see
   [tests/test_constraints.py](tests/test_constraints.py).
@@ -152,10 +187,12 @@ git clone https://github.com/seismael/DMRG-Transformer.git
 cd DMRG-Transformer
 uv sync --extra dev                          # installs torch+cu121, scipy, pytest
 uv run python scripts/detect_cuda.py         # smoke test cuSOLVER + GPU
-uv run python -m pytest tests --no-header -q # 29 tests, ~50 s
-uv run python scripts/run_gate3_proof.py     # -> bench/GATE3_PROOF.md
-uv run python scripts/run_poc_benchmark.py   # -> bench/POC_RESULTS.md
-uv run python scripts/run_benchmarks.py      # -> bench/RESULTS.md
+uv run python -m pytest tests --no-header -q # 45 tests, ~60 s
+uv run python scripts/run_gate3_proof.py        # -> bench/GATE3_PROOF.md
+uv run python scripts/run_poc_benchmark.py      # -> bench/POC_RESULTS.md
+uv run python scripts/run_benchmarks.py         # -> bench/RESULTS.md
+uv run python scripts/run_headline_benchmark.py # -> bench/HEADLINE.md (1024×1024)
+uv run python scripts/run_pareto.py             # -> bench/PARETO.md
 ```
 
 CPU execution is **not supported by default**: every entry point goes
@@ -283,7 +320,9 @@ scripts/
   run_gate3_proof.py        -> bench/GATE3_PROOF.md
   run_poc_benchmark.py      -> bench/POC_RESULTS.md
   run_benchmarks.py         -> bench/RESULTS.md (three-way runoff)
-tests/                      29 tests including all AGENTS gates;
+tests/                      45 tests including all AGENTS gates,
+                            matrix-free regression, arena zero-alloc,
+                            adaptive-rank rule, propagation cascade;
                             conftest.py pins default device to cuda:0
 docs/                       architecture specs — source of truth
 ```
