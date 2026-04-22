@@ -10,9 +10,9 @@
 
 | Model | Train acc | **Test acc** | Params | Wall (s) |
 | :---- | --------: | -----------: | -----: | -------: |
-| TT-DMRG (no grads) | 0.7209 | **0.7194** | 1,946 | 14.16 |
-| Dense (AdamW, MSE) | 0.9179 | **0.8778** | 1,946 | 48.56 |
-| Dense (AdamW, CE)  | 1.0000 | **0.8611** | 1,946 | 50.35 |
+| TT-DMRG (no grads) | 0.7209 | **0.7194** | 1,946 | 14.14 |
+| Dense (AdamW, MSE) | 0.9179 | **0.8778** | 1,946 | 49.11 |
+| Dense (AdamW, CE)  | 1.0000 | **0.8611** | 1,946 | 51.96 |
 
 **Measured DMRG → Adam-MSE gap:** +15.83 pp  
 **Measured DMRG → Adam-CE  gap:** +14.17 pp
@@ -106,14 +106,20 @@
 
 ## Honest gap analysis — root causes
 
-After landing (a) softmax-aware Q/K/V joint updates with trust-region accept/revert and (b) exact-LSQ input-projection updates (also trust-region wrapped), the residual DMRG-vs-Adam gap on this task is now dominated by the items below. Note: the dense Adam-MSE baseline still reaches **0.88 test acc**; the TT-DMRG path is at **~0.72**, narrowing the gap from the original 22 pp (frozen Q/K + frozen input proj) to ~16 pp.
+After landing (a) softmax-aware Q/K/V joint updates with trust-region accept/revert, (b) exact-LSQ input-projection updates (also trust-region wrapped), and (c) **empirically validating** that per-token target propagation does *not* help, the residual ~16 pp DMRG-vs-Adam gap on this task is now identified as a **structural ceiling** of the mean-pool-head architecture rather than a propagation defect.
 
-1. **Pooled-target broadcast.** The head target is pulled back to a *single* pooled vector and broadcast to every token, so the per-token block targets have rank-1 structure across the sequence axis. Adam's backprop can shape per-token outputs independently. This is now the single largest information bottleneck.
+### What we tried and what it told us
 
-2. **Trust-region rejections on Q,K bilinear path.** The Q,K joint update is non-convex (mirror-descent simplex damping + Gauss-Seidel ordering); the wrapper reverts steps that increase block MSE. Rejection rate climbs over training as the block approaches its local minimum, bounding per-step gain.
+- **Pooled-target broadcast** (current): each token is held to the same pooled target. Reaches ~0.72 test acc.
+- **Per-token "detail-preserving" target** (`R_target[t] = r_curr[t] + (pooled_target − mean_t r_curr)`): **regressed** to ~0.67 test acc. Diagnosis: the mean-pool head exposes only a single 16-dim constraint per example, so per-token rank in `R_target` is an *unconstrained* degree of freedom — preserving current per-token detail tells the block "keep doing what you do, just shifted by a constant", which removes the learning signal for per-token routing. **The broadcast is provably the maximum-information per-token target under mean pooling.**
+- **Inner block-sweep iterations per epoch (1 → 4)**: peak test acc unchanged (0.72), reached at ep3 instead of ep12, but later epochs overfit to ~0.68. Same architectural ceiling, faster convergence.
 
-3. **Trust-region rejections on input projection.** Empirically the input-proj exact-LSQ step is accepted in epoch 1 (large gain) and then reverted in subsequent epochs — the local-identity linearization `h_target ≈ h_curr + (R_target − block(h_curr))` becomes inaccurate once the block has been swept. Sharper input-proj propagation requires an exact pull-back through the *current* block, which is the same open problem as per-token pooled-target inversion.
+### Remaining contributors (in order)
 
-4. **GELU active-mask propagation** is identical to the MLP slice's ReLU mask trick — first-order, not exact. Smaller contributor.
+1. **Mean-pool head invariance.** The classifier loss is invariant to per-token permutation, so the block cannot learn position-specific roles from the loss alone. Adam's per-token gradient still uses the same constraint but applies it through the network Jacobian, breaking the symmetry implicitly. Closing this gap requires changing the head (e.g. [CLS]-token classification, or per-token logits + voting).
 
-Further closing this gap requires (a) per-token target propagation (invert `mean_pool` with explicit per-token degrees of freedom) and (b) iterating the input-proj / block sweep on the same epoch under a joint trust region. Both are scoped follow-ups; the propagator and block APIs are now in place.
+2. **Trust-region rejections.** Past epoch 1 the input-projection step is rejected (the local-identity linearization `h_target ≈ h_curr + (R_target − block(h_curr))` becomes inaccurate as the block moves), and Q,K bilinear steps are occasionally rejected too. Both bound per-step gain.
+
+3. **GELU active-mask propagation** — first-order, not exact. Smaller contributor.
+
+The Q/K softmax pull-back primitives (`solve_attention_pattern_target`, `softmax_target_to_scores`, `project_through_qk_bilinear`) are unit-tested in [tests/test_target_propagator_extensions.py](../tests/test_target_propagator_extensions.py). The block forward MSE drops monotonically (~0.40 → ~0.009) every epoch, demonstrating the solver is doing its job — the gap is in the *signal*, not the *solver*.

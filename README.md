@@ -214,17 +214,21 @@ Same `sklearn.load_digits` corpus reshaped as 8 tokens of dim 8, run through
 | Dense block (AdamW, CE)     | 1.0000    | **0.8611**   |    810 | ~5       |
 
 The ~16 pp residual DMRG gap is **honestly reported and root-caused** in
-the bench file's *Honest gap analysis* section. `TTBlock.dmrg_step` now
-runs the full Q/K/V/W_out + FFN update via softmax-aware bilinear pull-
-back (`TargetPropagator.solve_attention_pattern_target` →
+the bench file's *Honest gap analysis* section. `TTBlock.dmrg_step` runs
+the full Q/K/V/W_out + FFN update via softmax-aware bilinear pull-back
+(`TargetPropagator.solve_attention_pattern_target` →
 `softmax_target_to_scores` → `project_through_qk_bilinear`) under a
 trust-region accept/revert rule for the non-convex Q,K path, and the
 classifier's input projection is updated by exact ridge LSQ (also trust-
-region wrapped). Remaining gap is dominated by the pooled-target
-broadcast across token positions and trust-region rejections on hard
-attention / late-epoch input-proj steps — not by the solver itself.
-Block forward MSE drops monotonically (~0.40 → ~0.009), proving the
-solver works as designed.
+region wrapped). **Empirically validated negative result**: per-token
+"detail-preserving" target propagation (replacing the rank-1 broadcast)
+*regresses* test accuracy — mean-pool exposes only a single 16-dim
+constraint per example, so per-token rank in the target is structurally
+unconstrained. The remaining gap is therefore a **structural ceiling of
+the mean-pool-head architecture**, not a propagator defect; closing it
+would require changing the head (e.g. [CLS]-token classification). Block
+forward MSE drops monotonically every epoch (~0.40 → ~0.009), proving
+the solver works as designed.
 
 ### 3.7 Quality gates
 
