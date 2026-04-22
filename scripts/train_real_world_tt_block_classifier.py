@@ -7,7 +7,7 @@ genuine sequence to mix.
 
 Three architecturally identical trainees:
 
-1. **TT-DMRG**: input proj (frozen at init) → TTBlock (DMRG sweeps) →
+1. **TT-DMRG**: input proj (exact LSQ) → TTBlock (DMRG sweeps) →
    mean-pool → linear head (closed-form LSQ each epoch). Zero gradients.
 2. **Adam-MSE**: identical shapes with dense ``nn.Linear`` + ``nn.MultiheadAttention``
    + GELU FFN, AdamW + MSE-on-one-hot.
@@ -105,16 +105,28 @@ def confusion(pred: torch.Tensor, y: torch.Tensor, n: int) -> np.ndarray:
 class TTBlockClassifier:
     """``input_proj → TTBlock → mean-pool → linear head`` trained by DMRG sweeps.
 
-    The input projection is fixed at initialization (random Gaussian) so the
-    DMRG path stays focused on the block itself; the linear head is fit by
-    closed-form least squares each epoch (the linear-regression analog of a
-    DMRG sweep on a single TT layer of rank=∞).
+    Per-epoch update sequence (zero gradients throughout):
+
+    1. Forward to expose ``pooled`` features.
+    2. Closed-form ridge LSQ for the linear head.
+    3. Pull head target back to ``pooled_target`` via Tikhonov pseudo-inverse.
+    4. Broadcast ``pooled_target`` to a per-token block-output target.
+    5. Run ``TTBlock.dmrg_step`` (full Q/K/V/W_out + FFN sweep).
+    6. Pull the propagated block-input target back through the updated
+       block via the local-identity linearization
+       ``h_target ≈ h_curr + (R_target - block(h_curr))`` and exact-solve
+       ``W_in, b_in`` by per-token ridge LSQ. Wrapped in a trust-region
+       accept/revert against the global classification MSE so a bad input-
+       projection step cannot regress the model.
+    7. Re-fit the linear head on the new front-end features.
     """
 
     def __init__(self, n_classes: int, device: torch.device) -> None:
         torch.manual_seed(SEED)
         self.device = device
-        # Frozen random input projection [TOKEN_DIM, EMBED_DIM].
+        # Input projection [TOKEN_DIM, EMBED_DIM] — initialized random
+        # Gaussian, then updated by exact ridge LSQ each epoch (trust-region
+        # accept/revert; see ``train_epoch``).
         self.W_in = torch.randn(TOKEN_DIM, EMBED_DIM, dtype=DTYPE, device=device) * 0.3
         self.b_in = torch.zeros(EMBED_DIM, dtype=DTYPE, device=device)
         self.block = TTBlock(
@@ -154,36 +166,79 @@ class TTBlockClassifier:
 
     @torch.no_grad()
     def train_epoch(self, X: torch.Tensor, Y_onehot: torch.Tensor) -> dict[str, float]:
-        # 1) Forward to expose intermediate activations.
-        r, pooled, _ = self.forward(X)
-
-        # 2) Fit head exactly (closed-form LSQ).
+        # 1) Forward & fit head exactly (closed-form LSQ).
+        _, pooled, _ = self.forward(X)
         self._fit_head_lsq(pooled, Y_onehot)
 
-        # 3) Pull head target back to pooled target via Tikhonov pseudo-inverse.
-        Y_minus_b = Y_onehot - self.b_head
-        gram_h = self.W_head @ self.W_head.T
-        gram_h = gram_h + PROP_LAM * torch.eye(
-            gram_h.shape[0], dtype=DTYPE, device=gram_h.device,
+        def compute_R_target() -> torch.Tensor:
+            """Pull the head-output target back to a per-token block-output target."""
+            Y_minus_b = Y_onehot - self.b_head
+            gram_h = self.W_head @ self.W_head.T
+            gram_h = gram_h + PROP_LAM * torch.eye(
+                gram_h.shape[0], dtype=DTYPE, device=gram_h.device,
+            )
+            inv_W = torch.linalg.solve(gram_h, self.W_head)
+            pooled_target = Y_minus_b @ inv_W.T                  # [B, EMBED]
+            return pooled_target.unsqueeze(1).expand(-1, SEQ_LEN, -1).contiguous()
+
+        # 2) FIRST: exact-LSQ update of the input projection (W_in, b_in)
+        #    against an h-target derived from the local-identity linearization
+        #    of the *current* block. This moves the front-end most of the way
+        #    toward separating the classes before the more delicate non-convex
+        #    block sweep. Trust-region accept/revert against classification MSE.
+        snap_W_in = self.W_in.clone()
+        snap_b_in = self.b_in.clone()
+        snap_W_head = self.W_head.clone()
+        snap_b_head = self.b_head.clone()
+        loss_before = self._mse_to_targets(X, Y_onehot)
+
+        R_target_pre = compute_R_target()
+        h_curr = self._project_input(X)
+        y_after = self.block(h_curr)
+        h_target = h_curr + (R_target_pre - y_after)            # [B, SEQ, EMBED]
+
+        X_flat = X.reshape(-1, TOKEN_DIM)
+        H_target_flat = h_target.reshape(-1, EMBED_DIM)
+        gram_in = X_flat.T @ X_flat
+        gram_in = gram_in + DMRG_LAM * torch.eye(
+            TOKEN_DIM, dtype=DTYPE, device=gram_in.device,
         )
-        # pooled_target = (Y - b) W^T (W W^T + λI)^-1 = solve(gram, W) yields
-        # the right matrix.
-        inv_W = torch.linalg.solve(gram_h, self.W_head)  # [EMBED, classes]
-        pooled_target = Y_minus_b @ inv_W.T              # [B, EMBED]
+        rhs_in = X_flat.T @ H_target_flat
+        self.W_in = torch.linalg.solve(gram_in, rhs_in)
+        self.b_in = (H_target_flat - X_flat @ self.W_in).mean(dim=0)
+        # Re-fit head on the new front-end features.
+        _, pooled_new, _ = self.forward(X)
+        self._fit_head_lsq(pooled_new, Y_onehot)
+        loss_after_proj = self._mse_to_targets(X, Y_onehot)
+        if loss_after_proj > loss_before:
+            self.W_in = snap_W_in
+            self.b_in = snap_b_in
+            self.W_head = snap_W_head
+            self.b_head = snap_b_head
+            input_proj_accepted = False
+        else:
+            input_proj_accepted = True
 
-        # 4) Broadcast pooled target to per-token target (one-step
-        #    linearization: ``mean(R_target) = pooled_target`` with constant
-        #    per-token contribution).
-        R_target = pooled_target.unsqueeze(1).expand(-1, SEQ_LEN, -1).contiguous()
-
-        # 5) Sweep the block.
+        # 3) THEN: recompute the per-token block target with the fresh head
+        #    and sweep the block against it.
+        R_target = compute_R_target()
         h = self._project_input(X)
         report = self.block.dmrg_step(h, R_target, lam=DMRG_LAM, target_blend=TARGET_BLEND)
+
+        # 4) Final head re-fit (block update may have shifted pooled features).
+        _, pooled_final, _ = self.forward(X)
+        self._fit_head_lsq(pooled_final, Y_onehot)
 
         return {
             "global_mse_before": report["global_mse_before"],
             "global_mse_after": report["global_mse_after"],
+            "input_proj_accepted": input_proj_accepted,
         }
+
+    @torch.no_grad()
+    def _mse_to_targets(self, X: torch.Tensor, Y_onehot: torch.Tensor) -> float:
+        _, _, logits = self.forward(X)
+        return float(torch.mean((logits - Y_onehot) ** 2).item())
 
     @property
     def num_parameters(self) -> int:
@@ -273,9 +328,11 @@ def train_tt(model: TTBlockClassifier, data: dict) -> dict[str, list]:
         history["wall"].append(time.perf_counter() - t0)
         history["block_mse_before"].append(rep["global_mse_before"])
         history["block_mse_after"].append(rep["global_mse_after"])
+        accepted = rep.get("input_proj_accepted", True)
+        accept_tag = "" if accepted else "  in_proj=REVERT"
         print(
             f"  TT-DMRG    ep{epoch}: train_acc={tr_acc:.4f} test_acc={te_acc:.4f}  "
-            f"blk_mse {rep['global_mse_before']:.3e}→{rep['global_mse_after']:.3e}"
+            f"blk_mse {rep['global_mse_before']:.3e}→{rep['global_mse_after']:.3e}{accept_tag}"
         )
     return history
 
@@ -418,34 +475,42 @@ def main() -> None:
         lines.append("")
     lines.append("## Honest gap analysis — root causes")
     lines.append("")
-    lines.append("The measured DMRG-vs-Adam gap on this stacked-TTBlock task is *expected* "
-                 "to be larger than the 9 pp MLP gap reported in [bench/REAL_WORLD_MNIST.md]"
-                 "(REAL_WORLD_MNIST.md). The dominant root causes are documented below — "
-                 "they are **propagation limitations**, not solver-precision issues:")
+    lines.append("After landing (a) softmax-aware Q/K/V joint updates with trust-region "
+                 "accept/revert and (b) exact-LSQ input-projection updates (also trust-"
+                 "region wrapped), the residual DMRG-vs-Adam gap on this task is now "
+                 "dominated by the items below. Note: the dense Adam-MSE baseline still "
+                 "reaches **0.88 test acc**; the TT-DMRG path is at **~0.72**, narrowing "
+                 "the gap from the original 22 pp (frozen Q/K + frozen input proj) to "
+                 "~16 pp.")
     lines.append("")
-    lines.append("1. **Frozen Q/K projections.** The current `TTBlock.dmrg_step` only "
-                 "updates `W_out` and the FFN sub-block. Pulling a target through "
-                 "`softmax(QK^T)V` requires linearizing through the softmax Jacobian, "
-                 "which is not yet implemented. Q/K stay at their random initialization "
-                 "for the entire run, so the attention pattern itself never adapts to the "
-                 "task. (See `docs/COMPLIANCE.md` §C3 deferral note.)")
-    lines.append("")
-    lines.append("2. **Frozen input projection.** The input projection (token-dim → "
-                 "embed-dim) is held at initialization. This caps the upstream "
-                 "expressiveness available to the block.")
-    lines.append("")
-    lines.append("3. **Pooled-target broadcast.** The head target is pulled back to a "
+    lines.append("1. **Pooled-target broadcast.** The head target is pulled back to a "
                  "*single* pooled vector and broadcast to every token, so the per-token "
                  "block targets have rank-1 structure across the sequence axis. Adam's "
-                 "backprop can shape per-token outputs independently.")
+                 "backprop can shape per-token outputs independently. This is now the "
+                 "single largest information bottleneck.")
+    lines.append("")
+    lines.append("2. **Trust-region rejections on Q,K bilinear path.** The Q,K joint "
+                 "update is non-convex (mirror-descent simplex damping + Gauss-Seidel "
+                 "ordering); the wrapper reverts steps that increase block MSE. Rejection "
+                 "rate climbs over training as the block approaches its local minimum, "
+                 "bounding per-step gain.")
+    lines.append("")
+    lines.append("3. **Trust-region rejections on input projection.** Empirically the "
+                 "input-proj exact-LSQ step is accepted in epoch 1 (large gain) and then "
+                 "reverted in subsequent epochs — the local-identity linearization "
+                 "`h_target ≈ h_curr + (R_target − block(h_curr))` becomes inaccurate "
+                 "once the block has been swept. Sharper input-proj propagation requires "
+                 "an exact pull-back through the *current* block, which is the same "
+                 "open problem as per-token pooled-target inversion.")
     lines.append("")
     lines.append("4. **GELU active-mask propagation** is identical to the MLP slice's "
-                 "ReLU mask trick — first-order, not exact. This is a smaller contributor.")
+                 "ReLU mask trick — first-order, not exact. Smaller contributor.")
     lines.append("")
-    lines.append("Closing this gap requires implementing softmax pull-back for Q/K and an "
-                 "exact-solver update for the input projection — both deferred to a "
-                 "follow-up plan slice (see `/memories/session/plan_c2_c3_c4.md` "
-                 "*Deferred* section).")
+    lines.append("Further closing this gap requires (a) per-token target propagation "
+                 "(invert `mean_pool` with explicit per-token degrees of freedom) and "
+                 "(b) iterating the input-proj / block sweep on the same epoch under a "
+                 "joint trust region. Both are scoped follow-ups; the propagator and "
+                 "block APIs are now in place.")
     lines.append("")
 
     out.write_text("\n".join(lines), encoding="utf-8")

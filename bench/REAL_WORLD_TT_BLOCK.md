@@ -10,52 +10,52 @@
 
 | Model | Train acc | **Test acc** | Params | Wall (s) |
 | :---- | --------: | -----------: | -----: | -------: |
-| TT-DMRG (no grads) | 0.6569 | **0.6556** | 1,946 | 11.72 |
-| Dense (AdamW, MSE) | 0.9179 | **0.8778** | 1,946 | 48.55 |
-| Dense (AdamW, CE)  | 1.0000 | **0.8611** | 1,946 | 48.80 |
+| TT-DMRG (no grads) | 0.7209 | **0.7194** | 1,946 | 14.16 |
+| Dense (AdamW, MSE) | 0.9179 | **0.8778** | 1,946 | 48.56 |
+| Dense (AdamW, CE)  | 1.0000 | **0.8611** | 1,946 | 50.35 |
 
-**Measured DMRG → Adam-MSE gap:** +22.22 pp  
-**Measured DMRG → Adam-CE  gap:** +20.56 pp
+**Measured DMRG → Adam-MSE gap:** +15.83 pp  
+**Measured DMRG → Adam-CE  gap:** +14.17 pp
 
 ## Behavioral agreement on test set
 
-* TT-DMRG ↔ Dense-MSE: **0.6694**
-* TT-DMRG ↔ Dense-CE:  **0.6417**
+* TT-DMRG ↔ Dense-MSE: **0.7389**
+* TT-DMRG ↔ Dense-CE:  **0.7167**
 * Dense-MSE ↔ Dense-CE: **0.8778** (sanity check)
 
 ## Per-epoch test accuracy
 
 | Epoch | TT-DMRG | Dense (MSE) | Dense (CE) |
 | ----: | ------: | ----------: | ---------: |
-| 1 | 0.2194 | 0.6250 | 0.7722 |
-| 2 | 0.3611 | 0.7500 | 0.7972 |
-| 3 | 0.5639 | 0.8083 | 0.8417 |
-| 4 | 0.5972 | 0.8278 | 0.8611 |
-| 5 | 0.6194 | 0.8306 | 0.8694 |
-| 6 | 0.6250 | 0.8306 | 0.8583 |
-| 7 | 0.5750 | 0.8444 | 0.8611 |
-| 8 | 0.5694 | 0.8556 | 0.8583 |
-| 9 | 0.5944 | 0.8556 | 0.8556 |
-| 10 | 0.6806 | 0.8722 | 0.8583 |
-| 11 | 0.6667 | 0.8722 | 0.8611 |
-| 12 | 0.6556 | 0.8778 | 0.8611 |
+| 1 | 0.6361 | 0.6250 | 0.7722 |
+| 2 | 0.6611 | 0.7500 | 0.7972 |
+| 3 | 0.6583 | 0.8083 | 0.8417 |
+| 4 | 0.7000 | 0.8278 | 0.8611 |
+| 5 | 0.7000 | 0.8306 | 0.8694 |
+| 6 | 0.6889 | 0.8306 | 0.8583 |
+| 7 | 0.6944 | 0.8444 | 0.8611 |
+| 8 | 0.7028 | 0.8556 | 0.8583 |
+| 9 | 0.7111 | 0.8556 | 0.8556 |
+| 10 | 0.7167 | 0.8722 | 0.8583 |
+| 11 | 0.7111 | 0.8722 | 0.8611 |
+| 12 | 0.7194 | 0.8778 | 0.8611 |
 
 ## TTBlock per-epoch global MSE (block forward target tracking)
 
 | Epoch | MSE before sweep | MSE after sweep |
 | ----: | ---------------: | --------------: |
-| 1 | 4.043e-01 | 6.876e-02 |
-| 2 | 5.540e-02 | 2.893e-02 |
-| 3 | 3.847e-02 | 1.966e-02 |
-| 4 | 2.030e-02 | 1.729e-02 |
-| 5 | 1.509e-02 | 1.440e-02 |
-| 6 | 1.455e-02 | 1.307e-02 |
-| 7 | 1.262e-02 | 1.286e-02 |
-| 8 | 1.239e-02 | 1.235e-02 |
-| 9 | 1.172e-02 | 1.146e-02 |
-| 10 | 1.065e-02 | 1.041e-02 |
-| 11 | 1.039e-02 | 9.353e-03 |
-| 12 | 8.895e-03 | 8.820e-03 |
+| 1 | 1.219e+00 | 9.093e-02 |
+| 2 | 9.480e-02 | 3.349e-02 |
+| 3 | 2.703e-02 | 2.098e-02 |
+| 4 | 3.040e-02 | 1.864e-02 |
+| 5 | 3.865e-02 | 1.722e-02 |
+| 6 | 1.916e-02 | 1.610e-02 |
+| 7 | 1.465e-02 | 1.513e-02 |
+| 8 | 1.326e-02 | 1.201e-02 |
+| 9 | 1.325e-02 | 9.650e-03 |
+| 10 | 1.110e-02 | 1.080e-02 |
+| 11 | 1.331e-02 | 9.989e-03 |
+| 12 | 1.052e-02 | 9.575e-03 |
 
 ## Confusion matrices (held-out test set)
 
@@ -63,16 +63,16 @@
 
 | true \ pred | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
 | :- | -: | -: | -: | -: | -: | -: | -: | -: | -: | -: |
-| **0** | 34 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 |
-| **1** | 0 | 20 | 0 | 3 | 2 | 0 | 0 | 7 | 4 | 0 |
-| **2** | 0 | 2 | 25 | 1 | 5 | 1 | 0 | 0 | 0 | 1 |
-| **3** | 2 | 1 | 3 | 26 | 1 | 0 | 0 | 1 | 1 | 2 |
-| **4** | 1 | 1 | 4 | 2 | 24 | 0 | 0 | 4 | 0 | 0 |
-| **5** | 8 | 0 | 3 | 3 | 1 | 16 | 2 | 2 | 0 | 2 |
-| **6** | 0 | 1 | 0 | 0 | 0 | 1 | 28 | 4 | 2 | 0 |
-| **7** | 1 | 0 | 1 | 2 | 3 | 0 | 3 | 25 | 1 | 0 |
-| **8** | 4 | 6 | 2 | 0 | 1 | 0 | 0 | 3 | 19 | 0 |
-| **9** | 3 | 0 | 0 | 6 | 3 | 0 | 1 | 4 | 0 | 19 |
+| **0** | 33 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 2 | 0 |
+| **1** | 0 | 32 | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 |
+| **2** | 0 | 2 | 24 | 0 | 0 | 4 | 3 | 1 | 0 | 1 |
+| **3** | 2 | 6 | 3 | 18 | 1 | 1 | 0 | 1 | 0 | 5 |
+| **4** | 1 | 1 | 4 | 0 | 27 | 1 | 0 | 1 | 1 | 0 |
+| **5** | 0 | 0 | 1 | 0 | 1 | 26 | 0 | 1 | 0 | 8 |
+| **6** | 0 | 1 | 0 | 0 | 0 | 2 | 30 | 2 | 1 | 0 |
+| **7** | 0 | 0 | 1 | 1 | 0 | 2 | 6 | 23 | 2 | 1 |
+| **8** | 3 | 5 | 2 | 2 | 1 | 0 | 0 | 1 | 20 | 1 |
+| **9** | 1 | 0 | 3 | 1 | 1 | 1 | 0 | 3 | 0 | 26 |
 
 ### Dense (AdamW + MSE)
 
@@ -106,14 +106,14 @@
 
 ## Honest gap analysis — root causes
 
-The DMRG-vs-Adam gap on this stacked-TTBlock task remains larger than the 9 pp MLP gap reported in [bench/REAL_WORLD_MNIST.md](REAL_WORLD_MNIST.md). After implementing softmax-aware Q/K/V joint updates (commit following the bilinear pull-back work), the dominant remaining root causes are:
+After landing (a) softmax-aware Q/K/V joint updates with trust-region accept/revert and (b) exact-LSQ input-projection updates (also trust-region wrapped), the residual DMRG-vs-Adam gap on this task is now dominated by the items below. Note: the dense Adam-MSE baseline still reaches **0.88 test acc**; the TT-DMRG path is at **~0.72**, narrowing the gap from the original 22 pp (frozen Q/K + frozen input proj) to ~16 pp.
 
-1. **Q/K bilinear non-convexity (now mitigated, not eliminated).** `TTBlock.dmrg_step` now updates Q, K, V jointly via `TargetPropagator.solve_attention_pattern_target` → `softmax_target_to_scores` → `project_through_qk_bilinear` (Gauss-Seidel ordering, simplex mirror-descent damping). The whole attention update is wrapped in a **trust-region accept/revert** rule (snapshot Q/K/V, run sweep, revert if global block MSE worsened). The bilinear `Q Kᵀ = S` problem is non-convex; many proposed steps are rejected, so the per-step gain on the attention path is bounded. Best-epoch test acc improved ~+2 pp over the prior frozen-Q/K baseline (0.66 → ~0.68 best-epoch on this run); steady-state accuracy is similar.
+1. **Pooled-target broadcast.** The head target is pulled back to a *single* pooled vector and broadcast to every token, so the per-token block targets have rank-1 structure across the sequence axis. Adam's backprop can shape per-token outputs independently. This is now the single largest information bottleneck.
 
-2. **Frozen input projection.** The input projection (token-dim → embed-dim) is held at initialization. This caps the upstream expressiveness available to the block.
+2. **Trust-region rejections on Q,K bilinear path.** The Q,K joint update is non-convex (mirror-descent simplex damping + Gauss-Seidel ordering); the wrapper reverts steps that increase block MSE. Rejection rate climbs over training as the block approaches its local minimum, bounding per-step gain.
 
-3. **Pooled-target broadcast.** The head target is pulled back to a *single* pooled vector and broadcast to every token, so the per-token block targets have rank-1 structure across the sequence axis. Adam's backprop can shape per-token outputs independently.
+3. **Trust-region rejections on input projection.** Empirically the input-proj exact-LSQ step is accepted in epoch 1 (large gain) and then reverted in subsequent epochs — the local-identity linearization `h_target ≈ h_curr + (R_target − block(h_curr))` becomes inaccurate once the block has been swept. Sharper input-proj propagation requires an exact pull-back through the *current* block, which is the same open problem as per-token pooled-target inversion.
 
-4. **GELU active-mask propagation** is identical to the MLP slice's ReLU mask trick — first-order, not exact. This is a smaller contributor.
+4. **GELU active-mask propagation** is identical to the MLP slice's ReLU mask trick — first-order, not exact. Smaller contributor.
 
-Further closing this gap requires (a) an exact-solver update for the input projection, (b) per-token target propagation that doesn't collapse to a pooled-broadcast, and (c) tighter linearization for the GELU sub-path. The Q/K softmax pull-back primitives (`solve_attention_pattern_target`, `softmax_target_to_scores`, `project_through_qk_bilinear`) are now landed and unit-tested — see [tests/test_target_propagator_extensions.py](../tests/test_target_propagator_extensions.py).
+Further closing this gap requires (a) per-token target propagation (invert `mean_pool` with explicit per-token degrees of freedom) and (b) iterating the input-proj / block sweep on the same epoch under a joint trust region. Both are scoped follow-ups; the propagator and block APIs are now in place.

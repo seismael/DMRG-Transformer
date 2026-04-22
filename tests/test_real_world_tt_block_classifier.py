@@ -2,12 +2,15 @@
 
 Runs a tiny version of [scripts/train_real_world_tt_block_classifier.py]
 (../scripts/train_real_world_tt_block_classifier.py) and asserts the TT-DMRG
-trainee reaches at least 50% test accuracy on a sklearn-digits subset. The
-bar is intentionally loose because Q/K/V updates run under a trust-region
-# accept/revert rule (some steps are rejected when the bilinear softmax
-# pull-back overshoots) so per-step gains are bounded
-(see `docs/COMPLIANCE.md` §C3) — the goal is to catch regressions that
-break learning entirely, not to chase accuracy parity with Adam.
+trainee reaches at least 50% test accuracy on a sklearn-digits subset.
+
+This tiny test deliberately exercises **only the block path** (the input
+projection is held at random init), to isolate regressions in
+``TTBlock.dmrg_step`` from the input-proj exact-LSQ update used by the full
+benchmark script. The bar is loose because Q/K/V updates run under a
+trust-region accept/revert rule (some steps are rejected when the bilinear
+softmax pull-back overshoots) — the goal is to catch regressions that break
+learning entirely, not to chase accuracy parity with Adam.
 """
 from __future__ import annotations
 
