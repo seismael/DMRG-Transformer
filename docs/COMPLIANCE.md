@@ -78,6 +78,7 @@ gate criterion changes.
 | Adaptive rank scheduling | 🟡 | `adaptive_rank` selection rule + tests in [tests/test_adaptive_rank.py](../tests/test_adaptive_rank.py); integration into `DMRGOptimizer.sweep` deferred (single-flag wiring) |
 | Multi-layer Transformer block (TTBlock = TTMHA + TTFFN + LN + residual) | ⏳ | Plan §C2-C4 |
 | Language-modelling demo (WikiText-2) | ⏳ | Plan §D |
+| **End-to-end real supervised training** (DMRG-trained 2-layer MLP on `sklearn.load_digits`, 80/20 stratified split, beats 80 % held-out test accuracy) | ✅ | [scripts/train_real_world_classifier.py](../scripts/train_real_world_classifier.py) → [bench/REAL_WORLD_MNIST.md](../bench/REAL_WORLD_MNIST.md); regression-guarded by [tests/test_real_world_classifier.py](../tests/test_real_world_classifier.py). Demonstrates real generalization (88.3 % test acc, 88-89 % prediction agreement with AdamW baselines), not synthetic curve-fitting. |
 
 ## What's deferred to Phase IV
 

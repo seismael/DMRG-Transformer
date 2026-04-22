@@ -76,3 +76,8 @@ markers = [
     "slow: long-running benchmarks and end-to-end checks",
     "cuda: tests requiring a CUDA-capable GPU",
 ]
+
+[dependency-groups]
+dev = [
+    "scikit-learn>=1.8.0",
+]

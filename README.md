@@ -73,6 +73,7 @@ Full spec↔implementation traceability lives in [docs/COMPLIANCE.md](docs/COMPL
 | [scripts/run_benchmarks.py](scripts/run_benchmarks.py)               | [bench/RESULTS.md](bench/RESULTS.md) |
 | [scripts/run_headline_benchmark.py](scripts/run_headline_benchmark.py) | [bench/HEADLINE.md](bench/HEADLINE.md) |
 | [scripts/run_pareto.py](scripts/run_pareto.py)                       | [bench/PARETO.md](bench/PARETO.md) |
+| [scripts/train_real_world_classifier.py](scripts/train_real_world_classifier.py) | [bench/REAL_WORLD_MNIST.md](bench/REAL_WORLD_MNIST.md) |
 
 Reference hardware: NVIDIA GeForce MX150 (sm_61, 2.0 GiB), CUDA 12.1.
 
@@ -156,14 +157,58 @@ The MSE gap closes monotonically with `r`, exactly as the Eckart–Young–Mirsk
 bound predicts. On TT-rank-bounded targets (Gate 3 setup) DMRG matches the
 dense optimum to machine precision; see [bench/GATE3_PROOF.md](bench/GATE3_PROOF.md).
 
-### 3.5 Quality gates
+### 3.5 Real supervised-learning validation (DMRG vs. Adam, held-out test set)
 
-- **45 / 45 pytest tests passing on `cuda:0`** — see
+From [bench/REAL_WORLD_MNIST.md](bench/REAL_WORLD_MNIST.md), produced by
+[scripts/train_real_world_classifier.py](scripts/train_real_world_classifier.py).
+This is **not** synthetic regression on `sin(X·W)+noise` — it is a real
+10-class classification task on the public `sklearn.datasets.load_digits`
+corpus (1797 8×8 images, stratified 80/20 train/test split, seed=42).
+
+Three architecturally identical 2-layer MLPs (`64 → 32 → 10`, ReLU) are
+trained end-to-end:
+
+* **TT-MLP** trained by DMRG sweeps + target propagation through ReLU.
+  No gradients, no learning rate.
+* **Dense MLP** trained by AdamW on the same MSE-on-one-hot loss
+  (apples-to-apples).
+* **Dense MLP** trained by AdamW + cross-entropy (the conventional way).
+
+| Model                       | Train acc | **Test acc** | Params | Wall (s) |
+| :-------------------------- | --------: | -----------: | -----: | -------: |
+| TT-MLP (DMRG, no grads)     | 0.9026    | **0.8833**   |  1,194 | 1.81     |
+| Dense MLP (AdamW, MSE)      | 0.9972    | **0.9778**   |  2,410 | 2.03     |
+| Dense MLP (AdamW, CE)       | 1.0000    | **0.9694**   |  2,410 | 1.89     |
+
+**Behavioral agreement on the test set** (fraction of samples where the two
+models predict the same class):
+
+* TT-DMRG ↔ Dense-MSE: **0.8778**
+* TT-DMRG ↔ Dense-CE:  **0.8889**
+* Dense-MSE ↔ Dense-CE: 0.9611 (sanity check)
+
+The DMRG-trained TT-MLP **converges monotonically and generalizes**:
+random is 10 %; TT-DMRG hits 88 %. Its confusion matrix shows the
+residual mistakes are visually-plausible digit confusions (1↔8, 4↔9, 7↔9)
+— the signature of a real-but-undercapacity classifier, not noise. The
+9-point gap to the dense baselines is the cost of the 2.0× compression
+*at this very small scale* with the current naive ReLU target propagation;
+attention + LayerNorm + residual propagation (Phase C2–C4) is the
+next milestone (see [docs/COMPLIANCE.md](docs/COMPLIANCE.md)).
+
+**This is the answer to "is real training actually happening?":** yes —
+same held-out task, same train/test split, same evaluation. DMRG learns it
+without gradient descent.
+
+### 3.6 Quality gates
+
+- **46 / 46 pytest tests passing on `cuda:0`** — see
   [tests/conftest.py](tests/conftest.py) and
   [scripts/check.ps1](scripts/check.ps1). New suites cover Tikhonov
   NaN-escalation, SVD tier-2/3/4 fallbacks, the matrix-free memory
   regression guard, the `MemoryArena` 1000-cycle zero-allocation contract,
-  the adaptive-rank rule, and a 3-layer target-propagation cascade.
+  the adaptive-rank rule, a 3-layer target-propagation cascade, and the
+  end-to-end real-task classifier (must beat 80 % held-out test accuracy).
 - AGENTS constraint AST scans enforce: **no `backward()`**, **no Adam/SGD**,
   single authorised SVD + QR call-sites — see
   [tests/test_constraints.py](tests/test_constraints.py).
@@ -193,6 +238,7 @@ uv run python scripts/run_poc_benchmark.py      # -> bench/POC_RESULTS.md
 uv run python scripts/run_benchmarks.py         # -> bench/RESULTS.md
 uv run python scripts/run_headline_benchmark.py # -> bench/HEADLINE.md (1024×1024)
 uv run python scripts/run_pareto.py             # -> bench/PARETO.md
+uv run python scripts/train_real_world_classifier.py  # -> bench/REAL_WORLD_MNIST.md
 ```
 
 CPU execution is **not supported by default**: every entry point goes
@@ -320,9 +366,10 @@ scripts/
   run_gate3_proof.py        -> bench/GATE3_PROOF.md
   run_poc_benchmark.py      -> bench/POC_RESULTS.md
   run_benchmarks.py         -> bench/RESULTS.md (three-way runoff)
-tests/                      45 tests including all AGENTS gates,
+tests/                      46 tests including all AGENTS gates,
                             matrix-free regression, arena zero-alloc,
-                            adaptive-rank rule, propagation cascade;
+                            adaptive-rank rule, propagation cascade,
+                            real-task classifier;
                             conftest.py pins default device to cuda:0
 docs/                       architecture specs — source of truth
 ```
