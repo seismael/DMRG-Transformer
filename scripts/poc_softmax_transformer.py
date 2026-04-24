@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from dmrg_transformer.core.device import describe_device, require_cuda  # noqa: E402
 from dmrg_transformer.nn import TTBlock  # noqa: E402
+from dmrg_transformer.nn.embeddings import PositionalEncoding  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Hyperparameters
@@ -51,6 +52,27 @@ ADAM_ITERS_PER_EPOCH = 50
 DMRG_LAM = 1e-2
 PROP_LAM = 1e-2
 TARGET_BLEND = 0.5
+INNER_ITERS = 3
+
+
+def _console_safe(text: str) -> str:
+    """Return a console-safe rendering for Windows cp1252 terminals.
+
+    The benchmark report written to ``bench/REAL_WORLD_TT_BLOCK.md`` keeps the
+    richer Unicode typography. Console progress output, however, needs to stay
+    encodable on stock Windows shells where ``sys.stdout.encoding`` is often
+    ``cp1252`` and characters such as ``→`` or ``—`` raise ``UnicodeEncodeError``.
+    """
+    return (
+        text.replace("→", "->")
+        .replace("↔", "<->")
+        .replace("—", "-")
+        .replace("–", "-")
+    )
+
+
+def _console_print(text: str) -> None:
+    print(_console_safe(text))
 
 # Factorizations.
 EMBED_DIMS = [4, 4]      # 16
@@ -134,6 +156,7 @@ class TTBlockClassifier:
             embed_dims=EMBED_DIMS, hidden_dims=HIDDEN_DIMS,
             rank=RANK, propagator_lam=PROP_LAM, dtype=DTYPE,
         )
+        self.pos_enc = PositionalEncoding(EMBED_DIM, max_len=SEQ_LEN, dtype=DTYPE).to(device)
         self.W_head = torch.zeros(EMBED_DIM, n_classes, dtype=DTYPE, device=device)
         self.b_head = torch.zeros(n_classes, dtype=DTYPE, device=device)
         self.n_classes = n_classes
@@ -141,7 +164,8 @@ class TTBlockClassifier:
     @torch.no_grad()
     def _project_input(self, X: torch.Tensor) -> torch.Tensor:
         # X: [B, SEQ, TOKEN_DIM] -> [B, SEQ, EMBED_DIM]
-        return X @ self.W_in + self.b_in
+        h = X @ self.W_in + self.b_in
+        return self.pos_enc(h)
 
     @torch.no_grad()
     def forward(self, X: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -165,89 +189,91 @@ class TTBlockClassifier:
         self.b_head = b
 
     @torch.no_grad()
-    def train_epoch(self, X: torch.Tensor, Y_onehot: torch.Tensor) -> dict[str, float]:
+    def train_epoch(
+        self,
+        X: torch.Tensor,
+        Y_onehot: torch.Tensor,
+        *,
+        attn_target_blend: float | None = None,
+    ) -> dict[str, object]:
+        # Component-wise trust regions are more effective than global epoch-rollback.
+        
         # 1) Forward & fit head exactly (closed-form LSQ).
         _, pooled, _ = self.forward(X)
         self._fit_head_lsq(pooled, Y_onehot)
 
         def compute_R_target() -> torch.Tensor:
-            """Pull the head-output target back to a per-token block-output target.
+            """Difference Target Propagation (DTP)."""
+            R_curr, pooled_curr, logits_curr = self.forward(X)
+            residual = Y_onehot - logits_curr
+            W = self.W_head
+            d_in, d_out = W.shape
+            if d_in >= d_out:
+                gram = W.T @ W
+                lam_I = PROP_LAM * torch.eye(gram.shape[0], dtype=DTYPE, device=W.device)
+                inv_term = torch.linalg.solve(gram + lam_I, W.T)
+                delta_pooled = residual @ inv_term
+            else:
+                gram = W @ W.T
+                lam_I = PROP_LAM * torch.eye(gram.shape[0], dtype=DTYPE, device=W.device)
+                inv_term = torch.linalg.solve(gram + lam_I, W)
+                delta_pooled = residual @ inv_term.T
+            return R_curr + delta_pooled.unsqueeze(1)
 
-            The mean-pool head exposes only a single 16-dim constraint per
-            example (``mean_t(R_target) = pooled_target``). Per-token
-            detail in ``R_target`` is therefore an *unconstrained* degree of
-            freedom — adding rank across the sequence axis (e.g.
-            ``r_curr[t] + (pooled_target − mean_t r_curr)``) was found
-            empirically to *hurt* (it tells the block "preserve what you
-            already do, just shifted by a constant"). The pure broadcast
-            below maximises the per-token learning signal because every
-            token is held to the same pooled target, so per-token weight
-            updates that move *any* token toward ``pooled_target``
-            contribute to the loss reduction.
-            """
-            Y_minus_b = Y_onehot - self.b_head
-            gram_h = self.W_head @ self.W_head.T
-            gram_h = gram_h + PROP_LAM * torch.eye(
-                gram_h.shape[0], dtype=DTYPE, device=gram_h.device,
-            )
-            inv_W = torch.linalg.solve(gram_h, self.W_head)
-            pooled_target = Y_minus_b @ inv_W.T                  # [B, EMBED]
-            return pooled_target.unsqueeze(1).expand(-1, SEQ_LEN, -1).contiguous()
-
-        # 2) FIRST: exact-LSQ update of the input projection (W_in, b_in)
-        #    against an h-target derived from the local-identity linearization
-        #    of the *current* block. This moves the front-end most of the way
-        #    toward separating the classes before the more delicate non-convex
-        #    block sweep. Trust-region accept/revert against classification MSE.
-        snap_W_in = self.W_in.clone()
-        snap_b_in = self.b_in.clone()
-        snap_W_head = self.W_head.clone()
-        snap_b_head = self.b_head.clone()
+        # 2) Input Projection Update with Damping (Soft Step).
+        snap_W_in, snap_b_in = self.W_in.clone(), self.b_in.clone()
         loss_before = self._mse_to_targets(X, Y_onehot)
 
         R_target_pre = compute_R_target()
         h_curr = self._project_input(X)
-        y_after = self.block(h_curr)
-        h_target = h_curr + (R_target_pre - y_after)            # [B, SEQ, EMBED]
+        h_target = self.block.pullback_target(h_curr, R_target_pre, target_blend=TARGET_BLEND)
 
         X_flat = X.reshape(-1, TOKEN_DIM)
         H_target_flat = h_target.reshape(-1, EMBED_DIM)
-        gram_in = X_flat.T @ X_flat
-        gram_in = gram_in + DMRG_LAM * torch.eye(
-            TOKEN_DIM, dtype=DTYPE, device=gram_in.device,
-        )
+        gram_in = X_flat.T @ X_flat + DMRG_LAM * torch.eye(TOKEN_DIM, dtype=DTYPE, device=X.device)
         rhs_in = X_flat.T @ H_target_flat
-        self.W_in = torch.linalg.solve(gram_in, rhs_in)
-        self.b_in = (H_target_flat - X_flat @ self.W_in).mean(dim=0)
-        # Re-fit head on the new front-end features.
-        _, pooled_new, _ = self.forward(X)
-        self._fit_head_lsq(pooled_new, Y_onehot)
-        loss_after_proj = self._mse_to_targets(X, Y_onehot)
-        if loss_after_proj > loss_before:
-            self.W_in = snap_W_in
-            self.b_in = snap_b_in
-            self.W_head = snap_W_head
-            self.b_head = snap_b_head
+        W_in_new = torch.linalg.solve(gram_in, rhs_in)
+        b_in_new = (H_target_flat - X_flat @ W_in_new).mean(dim=0)
+        
+        # Apply damped update (Learning Rate for non-gradient solver).
+        alpha_in = 0.5 
+        self.W_in = (1 - alpha_in) * self.W_in + alpha_in * W_in_new
+        self.b_in = (1 - alpha_in) * self.b_in + alpha_in * b_in_new
+        
+        # Micro-fit head to check loss.
+        self._fit_head_lsq(self.forward(X)[1], Y_onehot)
+        loss_after = self._mse_to_targets(X, Y_onehot)
+        
+        # Soft Trust-Region: allow 1% increase in MSE if it means we keep moving.
+        if loss_after > 1.01 * loss_before:
+            self.W_in, self.b_in = snap_W_in, snap_b_in
             input_proj_accepted = False
         else:
             input_proj_accepted = True
 
-        # 3) THEN: recompute the per-token block target with the fresh head
-        #    and sweep the block against it.
-        R_target = compute_R_target()
-        h = self._project_input(X)
-        report = self.block.dmrg_step(
-            h, R_target, lam=DMRG_LAM, target_blend=TARGET_BLEND,
-        )
+        # 3) Block Sweep iterations (already has internal trust-regions).
+        last_mse_before_block = self._mse_to_targets(X, Y_onehot)
+        total_report = None
+        for _ in range(INNER_ITERS):
+            R_target = compute_R_target()
+            h = self._project_input(X)
+            report = self.block.dmrg_step(
+                h, R_target, lam=DMRG_LAM, target_blend=TARGET_BLEND,
+                attn_target_blend=attn_target_blend,
+            )
+            total_report = report
+            # Re-fit head after block moved.
+            self._fit_head_lsq(self.forward(X)[1], Y_onehot)
 
-        # 4) Final head re-fit (block update may have shifted pooled features).
-        _, pooled_final, _ = self.forward(X)
-        self._fit_head_lsq(pooled_final, Y_onehot)
+        loss_epoch_end = self._mse_to_targets(X, Y_onehot)
 
         return {
-            "global_mse_before": report["global_mse_before"],
-            "global_mse_after": report["global_mse_after"],
+            "global_mse_before": last_mse_before_block,
+            "global_mse_after": loss_epoch_end,
             "input_proj_accepted": input_proj_accepted,
+            "input_proj_alpha": float(alpha_in) if input_proj_accepted else 0.0,
+            "attn_accepted": bool(total_report["attn"]["accepted"]) if total_report else False,
+            "attn_diagnostics": total_report["attn"]["diagnostics"] if total_report else {},
         }
 
     @torch.no_grad()
@@ -272,6 +298,7 @@ class DenseBlockClassifier(torch.nn.Module):
         super().__init__()
         torch.manual_seed(SEED)
         self.in_proj = torch.nn.Linear(TOKEN_DIM, EMBED_DIM)
+        self.pos_enc = PositionalEncoding(EMBED_DIM, max_len=SEQ_LEN, dtype=DTYPE)
         self.ln1 = torch.nn.LayerNorm(EMBED_DIM, elementwise_affine=False)
         self.attn = torch.nn.MultiheadAttention(
             EMBED_DIM, NUM_HEADS, batch_first=True, bias=True,
@@ -284,6 +311,7 @@ class DenseBlockClassifier(torch.nn.Module):
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         h = self.in_proj(X)
+        h = self.pos_enc(h)
         a, _ = self.attn(self.ln1(h), self.ln1(h), self.ln1(h), need_weights=False)
         h = h + a
         ff = self.fc2(torch.nn.functional.gelu(self.fc1(self.ln2(h))))
@@ -299,8 +327,16 @@ def train_dense(
     model: DenseBlockClassifier, data: dict, *, loss_kind: str,
 ) -> dict[str, list]:
     opt = torch.optim.AdamW(model.parameters(), lr=ADAM_LR)
-    history: dict[str, list] = {"epoch": [], "train_acc": [], "test_acc": [], "wall": []}
+    history: dict[str, list] = {
+        "epoch": [], "train_acc": [], "test_acc": [], "wall": [],
+        "step_wall": [], "step_test_acc": [],  # iso-time samples per Adam step
+    }
+    # Reset GPU peak memory so it reflects only this method's allocations.
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
+    step_idx = 0
     for epoch in range(1, EPOCHS + 1):
         model.train()
         for _ in range(ADAM_ITERS_PER_EPOCH):
@@ -312,6 +348,17 @@ def train_dense(
                 loss = torch.nn.functional.cross_entropy(logits, data["y_tr"])
             loss.backward()
             opt.step()
+            step_idx += 1
+            # Iso-time sample every 10 Adam steps so we can compare against
+            # DMRG's per-sweep accuracy curve at matched wall-clock budgets.
+            if step_idx % 10 == 0:
+                model.eval()
+                with torch.no_grad():
+                    history["step_wall"].append(time.perf_counter() - t0)
+                    history["step_test_acc"].append(
+                        accuracy(model(data["X_te"]), data["y_te"]),
+                    )
+                model.train()
         model.eval()
         with torch.no_grad():
             tr_acc = accuracy(model(data["X_tr"]), data["y_tr"])
@@ -320,7 +367,14 @@ def train_dense(
         history["train_acc"].append(tr_acc)
         history["test_acc"].append(te_acc)
         history["wall"].append(time.perf_counter() - t0)
-        print(f"  Dense({loss_kind})  ep{epoch}: train_acc={tr_acc:.4f} test_acc={te_acc:.4f}")
+        _console_print(
+            f"  Dense({loss_kind})  ep{epoch}: train_acc={tr_acc:.4f} test_acc={te_acc:.4f}"
+        )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        history["peak_mem_mib"] = torch.cuda.max_memory_allocated() / (1024 * 1024)
+    else:
+        history["peak_mem_mib"] = 0.0
     return history
 
 
@@ -328,7 +382,11 @@ def train_tt(model: TTBlockClassifier, data: dict) -> dict[str, list]:
     history: dict[str, list] = {
         "epoch": [], "train_acc": [], "test_acc": [], "wall": [],
         "block_mse_before": [], "block_mse_after": [],
+        "input_proj_accepted": [], "input_proj_alpha": [], "attn_accepted": [],
     }
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
     for epoch in range(1, EPOCHS + 1):
         rep = model.train_epoch(data["X_tr"], data["Y_tr_onehot"])
@@ -344,12 +402,54 @@ def train_tt(model: TTBlockClassifier, data: dict) -> dict[str, list]:
         history["block_mse_before"].append(rep["global_mse_before"])
         history["block_mse_after"].append(rep["global_mse_after"])
         accepted = rep.get("input_proj_accepted", True)
+        history["input_proj_accepted"].append(bool(accepted))
+        history["input_proj_alpha"].append(float(rep.get("input_proj_alpha", 0.0)))
+        history["attn_accepted"].append(bool(rep.get("attn_accepted", False)))
         accept_tag = "" if accepted else "  in_proj=REVERT"
-        print(
+        alpha_val = rep.get("input_proj_alpha", 0.0)
+        alpha_tag = f"  a={alpha_val:.3g}" if accepted else ""
+        _console_print(
             f"  TT-DMRG    ep{epoch}: train_acc={tr_acc:.4f} test_acc={te_acc:.4f}  "
-            f"blk_mse {rep['global_mse_before']:.3e}→{rep['global_mse_after']:.3e}{accept_tag}"
+            f"blk_mse {rep['global_mse_before']:.3e}->{rep['global_mse_after']:.3e}"
+            f"{accept_tag}{alpha_tag}"
         )
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        history["peak_mem_mib"] = torch.cuda.max_memory_allocated() / (1024 * 1024)
+    else:
+        history["peak_mem_mib"] = 0.0
     return history
+
+
+# ----------------------------------------------------------------------------
+# Inference latency
+# ----------------------------------------------------------------------------
+@torch.no_grad()
+def measure_inference_latency(
+    forward_fn, X: torch.Tensor, *, warmup: int = 5, repeats: int = 20,
+) -> dict[str, float]:
+    """Median forward latency in milliseconds, with CUDA sync per call."""
+    cuda = torch.cuda.is_available()
+    for _ in range(warmup):
+        _ = forward_fn(X)
+        if cuda:
+            torch.cuda.synchronize()
+    samples = []
+    for _ in range(repeats):
+        if cuda:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        _ = forward_fn(X)
+        if cuda:
+            torch.cuda.synchronize()
+        samples.append((time.perf_counter() - t0) * 1000.0)
+    samples.sort()
+    return {
+        "median_ms": samples[len(samples) // 2],
+        "p10_ms": samples[max(0, len(samples) // 10)],
+        "p90_ms": samples[min(len(samples) - 1, len(samples) * 9 // 10)],
+        "throughput_examples_per_s": X.shape[0] * 1000.0 / samples[len(samples) // 2],
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -368,8 +468,8 @@ def _fmt_cm(cm: np.ndarray) -> str:
 
 def main() -> None:
     device = require_cuda()
-    print(f"Real-world TTBlock classifier benchmark on {describe_device()}")
-    print(
+    _console_print(f"Real-world TTBlock classifier benchmark on {describe_device()}")
+    _console_print(
         f"Architecture: [B,{SEQ_LEN},{TOKEN_DIM}] -> proj -> TTBlock("
         f"embed={EMBED_DIM}, heads={NUM_HEADS}, hidden={HIDDEN_DIM}, rank={RANK}) "
         f"-> mean-pool -> head"
@@ -377,18 +477,20 @@ def main() -> None:
 
     data = load_data(device)
     n_classes = data["n_classes"]
-    print(f"Dataset: sklearn load_digits — train={data['X_tr'].shape[0]}, "
-          f"test={data['X_te'].shape[0]}, classes={n_classes}\n")
+    _console_print(
+        f"Dataset: sklearn load_digits - train={data['X_tr'].shape[0]}, "
+        f"test={data['X_te'].shape[0]}, classes={n_classes}\n"
+    )
 
-    print("=== TTBlock trained by DMRG + target propagation ===")
+    _console_print("=== TTBlock trained by DMRG + target propagation ===")
     tt = TTBlockClassifier(n_classes, device)
     tt_hist = train_tt(tt, data)
 
-    print("\n=== Dense block (AdamW + MSE) ===")
+    _console_print("\n=== Dense block (AdamW + MSE) ===")
     dense_mse = DenseBlockClassifier(n_classes).to(device)
     dense_mse_hist = train_dense(dense_mse, data, loss_kind="mse")
 
-    print("\n=== Dense block (AdamW + CE) ===")
+    _console_print("\n=== Dense block (AdamW + CE) ===")
     dense_ce = DenseBlockClassifier(n_classes).to(device)
     dense_ce_hist = train_dense(dense_ce, data, loss_kind="ce")
 
@@ -403,6 +505,48 @@ def main() -> None:
         agree_tt_mse = float((p_tt == p_mse).float().mean().item())
         agree_tt_ce = float((p_tt == p_ce).float().mean().item())
         agree_mse_ce = float((p_mse == p_ce).float().mean().item())
+
+    # Inference latency at batch=full (=test set size) and batch=1.
+    X_te_full = data["X_te"]
+    X_te_one = data["X_te"][:1]
+    inf_tt_full = measure_inference_latency(lambda x: tt.forward(x), X_te_full)
+    inf_tt_one = measure_inference_latency(lambda x: tt.forward(x), X_te_one)
+    dense_mse.eval()
+    dense_ce.eval()
+    inf_mse_full = measure_inference_latency(lambda x: dense_mse(x), X_te_full)
+    inf_mse_one = measure_inference_latency(lambda x: dense_mse(x), X_te_one)
+    inf_ce_full = measure_inference_latency(lambda x: dense_ce(x), X_te_full)
+    inf_ce_one = measure_inference_latency(lambda x: dense_ce(x), X_te_one)
+
+    # Iso-time reads: at the wall-time TT-DMRG took to finish, what test acc
+    # had Adam reached?
+    tt_total_wall = tt_hist["wall"][-1]
+
+    def _acc_at_or_before(hist: dict, target_wall: float) -> tuple[float, float]:
+        """Return (acc, wall) for the last sample with wall <= target_wall."""
+        walls = hist.get("step_wall", [])
+        accs = hist.get("step_test_acc", [])
+        # Combine epoch-end and step samples.
+        combined = list(zip(walls, accs, strict=False))
+        for w, a in zip(hist["wall"], hist["test_acc"], strict=False):
+            combined.append((w, a))
+        combined.sort()
+        candidates = [(w, a) for (w, a) in combined if w <= target_wall]
+        if not candidates:
+            return (combined[0][1], combined[0][0]) if combined else (0.0, 0.0)
+        return (candidates[-1][1], candidates[-1][0])
+
+    iso_mse_acc, iso_mse_wall = _acc_at_or_before(dense_mse_hist, tt_total_wall)
+    iso_ce_acc, iso_ce_wall = _acc_at_or_before(dense_ce_hist, tt_total_wall)
+
+    # Acceptance rates over training.
+    in_proj_accept_rate = (
+        sum(tt_hist["input_proj_accepted"]) / len(tt_hist["input_proj_accepted"])
+    )
+    attn_accept_rate = (
+        sum(tt_hist["attn_accepted"]) / len(tt_hist["attn_accepted"])
+    )
+
 
     out = ROOT / "bench" / "REAL_WORLD_TT_BLOCK.md"
     out.parent.mkdir(exist_ok=True)
@@ -427,28 +571,95 @@ def main() -> None:
     lines.append("")
     lines.append("## Final test-set accuracy")
     lines.append("")
-    lines.append("| Model | Train acc | **Test acc** | Params | Wall (s) |")
-    lines.append("| :---- | --------: | -----------: | -----: | -------: |")
+    lines.append("| Model | Train acc | **Test acc** | Params | Wall (s) | Peak GPU (MiB) |")
+    lines.append("| :---- | --------: | -----------: | -----: | -------: | -------------: |")
     lines.append(
         f"| TT-DMRG (no grads) | {tt_hist['train_acc'][-1]:.4f} | "
         f"**{tt_hist['test_acc'][-1]:.4f}** | {tt_params:,} | "
-        f"{tt_hist['wall'][-1]:.2f} |"
+        f"{tt_hist['wall'][-1]:.2f} | {tt_hist['peak_mem_mib']:.1f} |"
     )
     lines.append(
         f"| Dense (AdamW, MSE) | {dense_mse_hist['train_acc'][-1]:.4f} | "
         f"**{dense_mse_hist['test_acc'][-1]:.4f}** | {dense_params:,} | "
-        f"{dense_mse_hist['wall'][-1]:.2f} |"
+        f"{dense_mse_hist['wall'][-1]:.2f} | {dense_mse_hist['peak_mem_mib']:.1f} |"
     )
     lines.append(
         f"| Dense (AdamW, CE)  | {dense_ce_hist['train_acc'][-1]:.4f} | "
         f"**{dense_ce_hist['test_acc'][-1]:.4f}** | {dense_params:,} | "
-        f"{dense_ce_hist['wall'][-1]:.2f} |"
+        f"{dense_ce_hist['wall'][-1]:.2f} | {dense_ce_hist['peak_mem_mib']:.1f} |"
     )
     lines.append("")
     gap_mse = dense_mse_hist["test_acc"][-1] - tt_hist["test_acc"][-1]
     gap_ce = dense_ce_hist["test_acc"][-1] - tt_hist["test_acc"][-1]
     lines.append(f"**Measured DMRG → Adam-MSE gap:** {gap_mse * 100:+.2f} pp  ")
     lines.append(f"**Measured DMRG → Adam-CE  gap:** {gap_ce * 100:+.2f} pp")
+    lines.append("")
+    lines.append("## Iso-time fairness check")
+    lines.append("")
+    lines.append("Both Adam baselines were sampled every 10 optimizer steps. "
+                 "The table below reports the test accuracy each Adam variant "
+                 "had reached by the wall-clock time TT-DMRG used in total.")
+    lines.append("")
+    lines.append("| Comparison | Wall budget (s) | Test acc at budget | Final test acc | Final wall (s) |")
+    lines.append("| :--------- | --------------: | -----------------: | -------------: | -------------: |")
+    lines.append(
+        f"| TT-DMRG (reference) | {tt_total_wall:.2f} | "
+        f"**{tt_hist['test_acc'][-1]:.4f}** | "
+        f"{tt_hist['test_acc'][-1]:.4f} | {tt_total_wall:.2f} |"
+    )
+    lines.append(
+        f"| Dense Adam-MSE @ TT-DMRG budget | {iso_mse_wall:.2f} | "
+        f"**{iso_mse_acc:.4f}** | {dense_mse_hist['test_acc'][-1]:.4f} | "
+        f"{dense_mse_hist['wall'][-1]:.2f} |"
+    )
+    lines.append(
+        f"| Dense Adam-CE  @ TT-DMRG budget | {iso_ce_wall:.2f} | "
+        f"**{iso_ce_acc:.4f}** | {dense_ce_hist['test_acc'][-1]:.4f} | "
+        f"{dense_ce_hist['wall'][-1]:.2f} |"
+    )
+    lines.append("")
+    iso_gap_mse = iso_mse_acc - tt_hist["test_acc"][-1]
+    iso_gap_ce = iso_ce_acc - tt_hist["test_acc"][-1]
+    lines.append(f"**Iso-time DMRG → Adam-MSE gap:** {iso_gap_mse * 100:+.2f} pp  ")
+    lines.append(f"**Iso-time DMRG → Adam-CE  gap:** {iso_gap_ce * 100:+.2f} pp")
+    lines.append("")
+    lines.append("## Inference latency (held-out test set)")
+    lines.append("")
+    lines.append(f"Median over 20 forward passes after 5 warmup runs. "
+                 f"Batch sizes: full = {X_te_full.shape[0]} examples, single = 1.")
+    lines.append("")
+    lines.append("| Model | Latency batch=1 (ms) | Latency batch=full (ms) | Throughput (ex/s, batch=full) |")
+    lines.append("| :---- | -------------------: | ----------------------: | ----------------------------: |")
+    lines.append(
+        f"| TT-DMRG | {inf_tt_one['median_ms']:.3f} | "
+        f"{inf_tt_full['median_ms']:.3f} | "
+        f"{inf_tt_full['throughput_examples_per_s']:.0f} |"
+    )
+    lines.append(
+        f"| Dense (AdamW, MSE) | {inf_mse_one['median_ms']:.3f} | "
+        f"{inf_mse_full['median_ms']:.3f} | "
+        f"{inf_mse_full['throughput_examples_per_s']:.0f} |"
+    )
+    lines.append(
+        f"| Dense (AdamW, CE)  | {inf_ce_one['median_ms']:.3f} | "
+        f"{inf_ce_full['median_ms']:.3f} | "
+        f"{inf_ce_full['throughput_examples_per_s']:.0f} |"
+    )
+    lines.append("")
+    lines.append("## DMRG sub-update acceptance rates")
+    lines.append("")
+    lines.append("Trust-region accept/revert is applied separately to the input "
+                 "projection (W_in, b_in) and the joint Q/K/V attention update. "
+                 "Rejection means the candidate update worsened the trust-region "
+                 "objective and was rolled back.")
+    lines.append("")
+    lines.append(f"* **Input-projection accept rate:** {in_proj_accept_rate:.1%} "
+                 f"({sum(tt_hist['input_proj_accepted'])}/{len(tt_hist['input_proj_accepted'])} epochs)")
+    lines.append(f"* **Attention (Q/K/V) accept rate:** {attn_accept_rate:.1%} "
+                 f"({sum(tt_hist['attn_accepted'])}/{len(tt_hist['attn_accepted'])} epochs)")
+    lines.append("")
+    lines.append("A persistently low attention accept rate is the leading indicator "
+                 "for the residual Adam gap on this task — see *root causes* below.")
     lines.append("")
     lines.append("## Behavioral agreement on test set")
     lines.append("")
@@ -545,7 +756,47 @@ def main() -> None:
     lines.append("")
 
     out.write_text("\n".join(lines), encoding="utf-8")
-    print(f"\nWrote {out.relative_to(ROOT)}")
+    _console_print(f"\nWrote {out.relative_to(ROOT)}")
+
+    # ---- Coverage-matrix sidecar (Phase E) ----
+    from dmrg_transformer.bench._instrumentation import dump_coverage_sidecar
+    sidecar = {
+        "tier": "tier2_one_block",
+        "label": "1x TTBlock (attention + FFN + LN + residual)",
+        "device": describe_device(),
+        "n_classes": int(n_classes),
+        "params": {"tt": int(tt_params), "dense": int(dense_params)},
+        "tt": {
+            "train_acc": tt_hist["train_acc"][-1],
+            "test_acc": tt_hist["test_acc"][-1],
+            "wall_s": tt_hist["wall"][-1],
+            "peak_mem_mib": tt_hist["peak_mem_mib"],
+            "inference_full_ms": inf_tt_full["median_ms"],
+            "inference_b1_ms": inf_tt_one["median_ms"],
+            "input_proj_accept_rate": in_proj_accept_rate,
+            "attn_accept_rate": attn_accept_rate,
+        },
+        "adam_mse": {
+            "train_acc": dense_mse_hist["train_acc"][-1],
+            "test_acc": dense_mse_hist["test_acc"][-1],
+            "iso_time_test_acc": iso_mse_acc,
+            "iso_time_wall_s": iso_mse_wall,
+            "wall_s": dense_mse_hist["wall"][-1],
+            "peak_mem_mib": dense_mse_hist["peak_mem_mib"],
+            "inference_full_ms": inf_mse_full["median_ms"],
+        },
+        "adam_ce": {
+            "train_acc": dense_ce_hist["train_acc"][-1],
+            "test_acc": dense_ce_hist["test_acc"][-1],
+            "iso_time_test_acc": iso_ce_acc,
+            "iso_time_wall_s": iso_ce_wall,
+            "wall_s": dense_ce_hist["wall"][-1],
+            "peak_mem_mib": dense_ce_hist["peak_mem_mib"],
+            "inference_full_ms": inf_ce_full["median_ms"],
+        },
+    }
+    sidecar_path = dump_coverage_sidecar("tier2_one_block", sidecar)
+    _console_print(f"Wrote {sidecar_path.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

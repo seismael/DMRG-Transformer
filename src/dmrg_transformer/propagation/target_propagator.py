@@ -73,9 +73,13 @@ class TargetPropagator:
         """Pull a downstream target back through a linear layer ``y = x @ W``.
 
         Solves ``x @ W = y_target`` for ``x`` via Tikhonov-damped pseudo-inverse
-        (SOLVER_MATH.md §I closed-form with damping):
+        (SOLVER_MATH.md §I closed-form with damping). Uses the min-dimension
+        Gram matrix for stability:
 
-            x* = y_target @ W^T (W W^T + λ I)^{-1}
+        * **Overdetermined** (``in >= out``):
+          ``x* = y_target @ (W^T W + λ I)^{-1} W^T``
+        * **Underdetermined** (``in < out``):
+          ``x* = y_target @ W^T (W W^T + λ I)^{-1}``
 
         Args:
             downstream_weight: ``[in, out]`` weight matrix of the subsequent layer.
@@ -85,10 +89,22 @@ class TargetPropagator:
             ``[batch, in]`` — the local target for the current layer's output.
         """
         W = downstream_weight
-        gram = W @ W.T  # [in, in]
-        lam_I = self.lam * torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
-        inv_term = torch.linalg.solve(gram + lam_I, W)  # [in, out]
-        return downstream_target @ inv_term.T
+        d_in, d_out = W.shape
+        if d_in >= d_out:
+            # Overdetermined (or square): x* = y_target @ W^+
+            # W^+ = (W^T W + λI)^-1 W^T
+            gram = W.T @ W  # [out, out]
+            lam_I = self.lam * torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
+            # Solve (gram + λI) X = W^T  -> X is [out, in]
+            inv_term = torch.linalg.solve(gram + lam_I, W.T)
+            return downstream_target @ inv_term
+        else:
+            # Underdetermined: x* = y_target @ W^T (W W^T + λ I)^{-1}
+            gram = W @ W.T  # [in, in]
+            lam_I = self.lam * torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
+            # Solve (gram + λI)^T X^T = W  -> X is [in, out]
+            inv_term = torch.linalg.solve(gram + lam_I, W)
+            return downstream_target @ inv_term.T
 
     def project_through_residual(
         self,
@@ -220,6 +236,11 @@ class TargetPropagator:
         normal equations, then project onto the probability simplex by
         clamping to ``[eps, ∞)`` and renormalizing rows to sum to 1.
 
+        This is a pragmatic simplex repair, **not** the exact Euclidean
+        projection onto the simplex. In the current block solver that
+        approximation is stabilized by the caller's mirror-descent blend
+        with the current attention pattern before inverse-softmax.
+
         Args:
             V: ``[B, H, L_k, d_h]`` value tensor (fixed).
             context_target: ``[B, H, L_q, d_h]`` target context.
@@ -238,17 +259,44 @@ class TargetPropagator:
                 f"shape mismatch: V {tuple(V.shape)} vs context_target "
                 f"{tuple(context_target.shape)}"
             )
-        # Solve a_q V = c_q  →  a_q* = c_q V^T (V V^T + λ I)^{-1}
-        VVt = V @ V.transpose(-2, -1)                     # [B, H, L_k, L_k]
-        eye = torch.eye(
-            VVt.shape[-1], dtype=VVt.dtype, device=VVt.device,
-        ).expand_as(VVt)
-        # context_target @ V^T : [B, H, L_q, L_k]
-        rhs = context_target @ V.transpose(-2, -1)
-        # Solve (V V^T + λ I)^T x^T = rhs^T  →  use solve with (LkxLk) on the right.
-        A_unconstrained = torch.linalg.solve(
-            VVt + self.lam * eye, rhs.transpose(-2, -1)
-        ).transpose(-2, -1)                                # [B, H, L_q, L_k]
+        # Solve a_q V = c_q  →  a_q* = c_q V^T (V V^T + λ I_L)^{-1}.
+        #
+        # REVIEW.md Issue E: the naive solve on (V V^T + λ I_L) is O(B·H·L³)
+        # and materialises an L×L matrix per (b, h). Since V has shape
+        # [B, H, L_k, d_h] with d_h typically ≤ L_k, the push-through
+        # identity
+        #     V^T (V V^T + λ I_L)^{-1} = (V^T V + λ I_{d_h})^{-1} V^T
+        # gives an exact rewrite
+        #     A_unconstrained = context_target · (V^T V + λ I_{d_h})^{-1} · V^T
+        # with cost O(B·H·d_h³) for the solve plus O(B·H·L·d_h²) matmuls —
+        # no L×L matrix is ever formed and no 1/λ appears anywhere.
+        L_k = V.shape[-2]
+        d_h = V.shape[-1]
+        if d_h < L_k:
+            # Structured (Woodbury push-through) path — exact, cheaper.
+            VtV = V.transpose(-2, -1) @ V                      # [B, H, d_h, d_h]
+            eye_h = torch.eye(
+                d_h, dtype=VtV.dtype, device=VtV.device,
+            ).expand_as(VtV)
+            # M = V^T V + λ I_{d_h}
+            M = VtV + self.lam * eye_h
+            # context_target: [B, H, L_q, d_h] → solve returns [B, H, d_h, L_q]
+            # via  M X = context_target^T   (broadcast over B, H).
+            X = torch.linalg.solve(M, context_target.transpose(-2, -1))
+            # Multiply by V^T on the right: [B, H, d_h, L_q]^T @ V^T? No —
+            # we want  context_target · M^{-1} · V^T
+            #       = (M^{-1} · context_target^T)^T · V^T
+            A_unconstrained = X.transpose(-2, -1) @ V.transpose(-2, -1)
+        else:
+            # Dense path kept for the d_h >= L_k regime (e.g. small L_k).
+            VVt = V @ V.transpose(-2, -1)                      # [B, H, L_k, L_k]
+            eye = torch.eye(
+                L_k, dtype=VVt.dtype, device=VVt.device,
+            ).expand_as(VVt)
+            rhs = context_target @ V.transpose(-2, -1)         # [B, H, L_q, L_k]
+            A_unconstrained = torch.linalg.solve(
+                VVt + self.lam * eye, rhs.transpose(-2, -1)
+            ).transpose(-2, -1)                                # [B, H, L_q, L_k]
         # Project to probability simplex: clamp + renormalize per row.
         A_clamped = A_unconstrained.clamp_min(eps)
         return A_clamped / A_clamped.sum(dim=-1, keepdim=True)
@@ -268,6 +316,11 @@ class TargetPropagator:
         The returned tensor is multiplied by ``scale`` so the caller can
         recover scores at the ``Q K^T / √d`` convention by passing
         ``scale = √d``.
+
+        No explicit logit-magnitude cap is applied here: the current stability
+        mechanism is to keep ``A_target`` close to the current attention via
+        upstream simplex blending and to reject non-convex Q/K/V steps that
+        worsen the block MSE.
 
         Args:
             A_target: ``[..., L_k]`` row-stochastic target.

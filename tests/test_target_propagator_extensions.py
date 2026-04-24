@@ -140,6 +140,108 @@ def test_solve_attention_pattern_target_recovers_a_when_v_is_full_rank() -> None
     assert err < 1.0e-4, f"A pull-back error too large: {err:.3e}"
 
 
+def test_solve_attention_pattern_target_woodbury_matches_dense() -> None:
+    """REVIEW.md Issue E: the Woodbury push-through path (d_h < L_k) must
+    produce numerically identical ``A_unconstrained`` to the dense
+    ``(V V^T + λI_L)^{-1}`` path.
+
+    The two paths share the simplex-projection postprocessing, so comparing
+    ``A_target`` (post clamp + renormalise) is the tightest possible check.
+    """
+    torch.manual_seed(42)
+    B, H, L_q, L_k, d_h = 2, 3, 7, 16, 4  # d_h < L_k → Woodbury path active.
+    V = torch.randn(B, H, L_k, d_h, dtype=torch.float64)
+    C = torch.randn(B, H, L_q, d_h, dtype=torch.float64)
+    lam = 1.0e-6
+
+    # Reference: run the dense path by forcing d_h >= L_k via zero-padding V.
+    # This keeps λ and C identical and yields the same A up to the implicit
+    # zero columns being absorbed by the damping.
+    prop = TargetPropagator(lam=lam)
+    A_struct = prop.solve_attention_pattern_target(V, C, eps=1.0e-14)
+
+    # Inline reference computation of the dense path for exact parity:
+    VVt = V @ V.transpose(-2, -1)
+    eye = torch.eye(L_k, dtype=VVt.dtype, device=VVt.device).expand_as(VVt)
+    rhs = C @ V.transpose(-2, -1)
+    A_ref_unconstr = torch.linalg.solve(
+        VVt + lam * eye, rhs.transpose(-2, -1)
+    ).transpose(-2, -1)
+    A_ref_clamped = A_ref_unconstr.clamp_min(1.0e-14)
+    A_ref = A_ref_clamped / A_ref_clamped.sum(dim=-1, keepdim=True)
+
+    max_diff = (A_struct - A_ref).abs().max().item()
+    # 1e-8 tolerance: the dense path's (V V^T + λI_L) is rank-deficient
+    # (rank ≤ d_h in L_k-dim), so its solve is ill-conditioned at λ=1e-6.
+    # The Woodbury path works in the d_h×d_h space and is actually more
+    # accurate — the gap is pure float64 residue from the dense path.
+    assert max_diff < 1.0e-8, (
+        f"Woodbury vs dense path diverged: max|Δ|={max_diff:.3e}"
+    )
+
+
+def test_solve_attention_pattern_target_scales_to_long_sequences() -> None:
+    """REVIEW Issue E regression: at L=512, d_h=8 the Woodbury path must
+    use materially less peak memory than the dense O(L²) ``VVt`` path.
+
+    Approach: compare peak *additional* allocations during each path with
+    a clean allocator state per call. The dense path necessarily allocates
+    ``VVt`` and ``VVt + λI`` both of shape ``[B, H, L, L]`` whereas the
+    Woodbury path allocates only ``VtV`` of shape ``[B, H, d_h, d_h]``.
+    """
+    if not torch.cuda.is_available():
+        import pytest
+        pytest.skip("CUDA not available")
+    torch.manual_seed(7)
+    dev = torch.device("cuda", 0)
+    B, H, L, d_h = 2, 4, 512, 8
+    V = torch.randn(B, H, L, d_h, dtype=torch.float64, device=dev)
+    C = torch.randn(B, H, L, d_h, dtype=torch.float64, device=dev)
+    prop = TargetPropagator(lam=1.0e-6)
+    lam = prop.lam
+
+    def _measure_peak(fn):
+        torch.cuda.synchronize(dev)
+        torch.cuda.empty_cache()
+        base = torch.cuda.memory_allocated(dev)
+        torch.cuda.reset_peak_memory_stats(dev)
+        out = fn()
+        torch.cuda.synchronize(dev)
+        peak = torch.cuda.max_memory_allocated(dev) - base
+        return out, peak
+
+    def _run_dense():
+        VVt = V @ V.transpose(-2, -1)
+        eye = torch.eye(L, dtype=VVt.dtype, device=dev).expand_as(VVt)
+        rhs = C @ V.transpose(-2, -1)
+        X = torch.linalg.solve(
+            VVt + lam * eye, rhs.transpose(-2, -1)
+        ).transpose(-2, -1)
+        Xc = X.clamp_min(1.0e-14)
+        return Xc / Xc.sum(dim=-1, keepdim=True)
+
+    A_wb, peak_wb = _measure_peak(
+        lambda: prop.solve_attention_pattern_target(V, C, eps=1.0e-14),
+    )
+    A_dense, peak_dense = _measure_peak(_run_dense)
+
+    assert torch.isfinite(A_wb).all()
+    assert torch.allclose(A_wb, A_dense, atol=1.0e-7, rtol=1.0e-5), (
+        f"Woodbury vs dense: max|Δ|={(A_wb - A_dense).abs().max().item():.3e}"
+    )
+    # Woodbury must be meaningfully cheaper than dense. At L=512 dense
+    # allocates at least 3× [B, H, L, L] float64 = 3 × 16 MiB = 48 MiB of
+    # L×L tensors that Woodbury avoids entirely. Require ≥ 1.5× ratio to
+    # absorb allocator jitter while still failing loudly if Woodbury ever
+    # regresses to materialising VVt.
+    ratio = peak_dense / max(peak_wb, 1)
+    assert ratio >= 1.5, (
+        f"Woodbury peak={peak_wb/2**20:.2f} MiB, "
+        f"dense peak={peak_dense/2**20:.2f} MiB "
+        f"(ratio={ratio:.2f}×) — REVIEW Issue E regressed."
+    )
+
+
 def test_softmax_target_to_scores_round_trip() -> None:
     """``softmax(softmax_target_to_scores(A)) == A`` (gauge-invariance check)."""
     torch.manual_seed(12)

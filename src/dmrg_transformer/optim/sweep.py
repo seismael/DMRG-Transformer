@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import torch
 
 from dmrg_transformer.optim.local_solver import LocalSolveResult, solve_local_core
+from dmrg_transformer.tt.environments import EnvironmentCache
 from dmrg_transformer.tt.tensor_train import TensorTrain
 
 
@@ -66,6 +67,8 @@ class DMRGOptimizer:
         Y: torch.Tensor,
         k: int,
         direction: str = "left",
+        L: torch.Tensor | None = None,
+        R: torch.Tensor | None = None,
     ) -> LocalSolveResult:
         return solve_local_core(
             tt, X, Y, k,
@@ -74,6 +77,7 @@ class DMRGOptimizer:
             direction=direction,
             clamp_target=self.clamp_target,
             adaptive_threshold=self.adaptive_threshold,
+            L=L, R=R,
         )
 
     def truncate_svd(self, exact_core: torch.Tensor, max_rank: int) -> torch.Tensor:
@@ -99,39 +103,58 @@ class DMRGOptimizer:
         Ensures the TT is properly gauged before each direction via
         :mod:`dmrg_transformer.tt.gauge`.
         """
-        from dmrg_transformer.tt.gauge import orthogonalize_left_to, orthogonalize_right_to
+        from dmrg_transformer.tt.gauge import (
+            orthogonalize_left_to,
+            orthogonalize_right_to,
+        )
 
         initial_pred = X @ tt.to_dense()
         initial_mse = float(torch.mean((initial_pred - Y) ** 2).item())
 
         tiers: list[int] = []
         steps = 0
+        d = tt.num_cores
 
         # Prepare for L→R sweep: right-orthogonalize everything so gauge center is at 0.
         orthogonalize_right_to(tt, 0)
-        d = tt.num_cores
-        # L→R: optimize cores 0..d-2, pushing S·Vh to the right each time.
-        for k in range(d - 1):
-            res = self.solve_local_core(tt, X, Y, k, direction="left")
-            steps += 1
-            tiers.append(int(getattr(res, "tier", 1)) if hasattr(res, "tier") else 1)
-        # Optimize the terminal core (no gauge shift needed: treat as "left" with no k+1).
-        # We directly optimize core d-1 as the gauge center.
-        res_last = self.solve_local_core(tt, X, Y, d - 1, direction="left")
-        steps += 1
+        cache = EnvironmentCache(tt, X)
 
-        # R→L sweep.
-        orthogonalize_left_to(tt, d - 1)
-        for k in range(d - 1, 0, -1):
-            res = self.solve_local_core(tt, X, Y, k, direction="right")
+        # L→R Sweep
+        for k in range(d):
+            L_block = cache.get_left(k)
+            R_block = cache.get_right(k + 1)
+
+            res = self.solve_local_core(tt, X, Y, k, direction="left", L=L_block, R=R_block)
+
+            # After updating core k and k+1 (gauge shift), invalidate both directions
+            # for any block that might use them.
+            cache.invalidate_left(k + 1)
+            cache.invalidate_right(k + 1)
+
             steps += 1
-        res_first = self.solve_local_core(tt, X, Y, 0, direction="right")
-        steps += 1
+            if hasattr(res, "tier"):
+                tiers.append(int(res.tier))
+
+        # R→L Sweep
+        orthogonalize_left_to(tt, d - 1)
+        cache = EnvironmentCache(tt, X)
+
+        for k in range(d - 1, -1, -1):
+            L_block = cache.get_left(k)
+            R_block = cache.get_right(k + 1)
+
+            res = self.solve_local_core(tt, X, Y, k, direction="right", L=L_block, R=R_block)
+
+            cache.invalidate_left(k)
+            cache.invalidate_right(k)
+
+            steps += 1
+            if hasattr(res, "tier"):
+                tiers.append(int(res.tier))
 
         final_pred = X @ tt.to_dense()
         final_mse = float(torch.mean((final_pred - Y) ** 2).item())
 
-        _ = res_last, res_first  # kept for potential debug/logging hooks.
         return SweepReport(
             initial_mse=initial_mse, final_mse=final_mse,
             local_steps=steps, tiers=tiers,

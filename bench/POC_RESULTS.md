@@ -10,9 +10,9 @@ Honest test of the central PoC claim: **when the target weight matrix lives on t
 
 | Method | Final MSE | Wall (s) | Steps/Sweeps | Params | Time-to-1e-6 (s) |
 | :----- | --------: | -------: | -----------: | -----: | ---------------: |
-| Adam (gradient descent) | 6.538e-07 | 3.462 | 5000 | 4,096 | 0.601 |
-| Dense lstsq (O(N^3) lower bound) | 2.484e-30 | 0.043 | 1 | 4,096 | 0.043 |
-| TT-DMRG exact sweep | 7.606e-09 | 0.280 | 3 | 512 | 0.280 |
+| Adam (gradient descent) | 6.538e-07 | 3.566 | 5000 | 4,096 | 0.651 |
+| Dense lstsq (O(N^3) lower bound) | 2.484e-30 | 0.049 | 1 | 4,096 | 0.049 |
+| TT-DMRG exact sweep | 7.606e-09 | 0.262 | 3 | 512 | 0.262 |
 
 *Parameter compression: 4,096 dense -> 512 TT (8.0x).*
 
@@ -20,9 +20,9 @@ Honest test of the central PoC claim: **when the target weight matrix lives on t
 
 | Method | Final MSE | Wall (s) | Steps/Sweeps | Params | Time-to-1e-6 (s) |
 | :----- | --------: | -------: | -----------: | -----: | ---------------: |
-| Adam (gradient descent) | 2.654e-06 | 8.260 | 5000 | 20,736 | 1.157 |
-| Dense lstsq (O(N^3) lower bound) | 2.210e-29 | 0.021 | 1 | 20,736 | 0.021 |
-| TT-DMRG exact sweep | 1.843e-07 | 0.591 | 3 | 1,728 | 0.591 |
+| Adam (gradient descent) | 2.654e-06 | 7.516 | 5000 | 20,736 | 1.052 |
+| Dense lstsq (O(N^3) lower bound) | 2.210e-29 | 0.046 | 1 | 20,736 | 0.046 |
+| TT-DMRG exact sweep | 1.843e-07 | 0.280 | 3 | 1,728 | 0.280 |
 
 *Parameter compression: 20,736 dense -> 1,728 TT (12.0x).*
 

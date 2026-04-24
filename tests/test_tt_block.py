@@ -1,6 +1,8 @@
 """Tests for ``TTBlock`` (Pre-LN Transformer encoder block)."""
 from __future__ import annotations
 
+import math
+
 import torch
 
 from dmrg_transformer.nn.tt_block import TTBlock
@@ -55,4 +57,16 @@ def test_ttblock_dmrg_step_reduces_global_mse() -> None:
     assert "ffn" in report and "attn" in report
     assert {"fc1", "fc2"} <= set(report["ffn"].keys())
     assert {"Q", "K", "V", "W_out"} <= set(report["attn"].keys())
+    assert isinstance(report["attn"]["accepted"], bool)
+    diag = report["attn"]["diagnostics"]
+    # Current TTBlock.dmrg_step contract: Q/K and V each carry an
+    # independent trust-region accept/revert flag, and the diagnostics
+    # report the global MSE before the joint Q/K/V step plus the global
+    # MSE after the V update attempt.
+    assert {"qk_accepted", "v_accepted", "mse_before", "mse_after_v"} <= set(diag.keys())
+    assert isinstance(diag["qk_accepted"], bool)
+    assert isinstance(diag["v_accepted"], bool)
+    for key in ("mse_before", "mse_after_v"):
+        assert math.isfinite(diag[key])
+        assert diag[key] >= 0.0
     assert "global_mse_before" in report and "global_mse_after" in report

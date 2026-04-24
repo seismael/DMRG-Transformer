@@ -83,12 +83,24 @@ class OptimizationBenchmark:
         rank: int = 32,
         *,
         device: torch.device | None = None,
+        target_rank: int | None = None,
     ) -> None:
+        """Synthetic in→out regression benchmark.
+
+        ``target_rank``: when ``None`` the target is the spec-default
+        ``Y = sin(X·W) + 0.1·η`` (full-rank, used by HEADLINE). When set to
+        an integer ``R``, the target is generated as
+        ``Y = X · W_TT(rank=R) + 0.1·η`` so the *exact* optimum lives on
+        the TT manifold of rank ``R`` — this is the production form of the
+        Gate-3 proof and lets DMRG recover the dense lstsq MSE up to the
+        noise floor.
+        """
         self.in_features = in_features
         self.out_features = out_features
         self.batch_size = batch_size
         self.rank = rank
         self.device = device or require_cuda()
+        self.target_rank = target_rank
 
         # Adaptive TT: 2 cores for small n (expressive), 4 cores for large n
         # (tractable normal-equation matrices at 1024 scale).
@@ -124,7 +136,21 @@ class OptimizationBenchmark:
         noise = torch.randn(
             batch_size, out_features, dtype=torch.float64, device=self.device,
         ) * 0.1
-        self.Y = torch.sin(self.X @ true_W) + noise
+        if target_rank is None:
+            # Spec-default full-rank target.
+            self.Y = torch.sin(self.X @ true_W) + noise
+        else:
+            # Rank-bounded target on the TT manifold of rank ``target_rank``.
+            # Construct ``W_low`` by TT-decomposing then re-densifying ``true_W``
+            # with ``max_rank=target_rank`` so ``Y = X·W_low + noise`` is by
+            # construction representable in TT-rank ``target_rank``. DMRG with
+            # ``rank >= target_rank`` MUST recover the dense-exact MSE up to
+            # the noise floor.
+            tt_low, _ = TensorTrain.from_dense(
+                true_W, self.input_dims, self.output_dims, max_rank=target_rank,
+            )
+            W_low = tt_low.to_dense()
+            self.Y = self.X @ W_low + noise
 
     def _sync(self) -> None:
         if self.device.type == "cuda":
@@ -299,6 +325,136 @@ class OptimizationBenchmark:
         return self._aggregate(
             "TT-DMRG Exact Sweep",
             self.total_tt_params, mses, times, peak, flops=flops_per_call,
+        )
+
+    # -- 4. Adam over a low-rank dense factorization (iso-rank baseline) -------
+
+    def run_adam_low_rank(
+        self,
+        iterations: int = 500,
+        lr: float = 0.01,
+        *,
+        warmup: int = 1,
+        seeds: int = 1,
+        rank: int | None = None,
+    ) -> BenchmarkResult:
+        """Adam on ``W = U @ V`` with ``U: (in, r), V: (r, out)``.
+
+        This is the *iso-rank* fairness baseline for headlines that compare
+        TT-DMRG (rank-bounded) against full-rank Adam. Parameter count is
+        ``r·(in + out)`` — directly comparable to TT in expressivity, and
+        usually much smaller than the dense ``in·out`` budget.
+        """
+        r = rank if rank is not None else self.rank
+
+        def _one(seed: int) -> tuple[float, float]:
+            torch.manual_seed(seed)
+            U = torch.randn(
+                self.in_features, r, dtype=torch.float64, device=self.device,
+            ) * (1.0 / (self.in_features ** 0.5))
+            V = torch.randn(
+                r, self.out_features, dtype=torch.float64, device=self.device,
+            ) * 0.01
+            mU = torch.zeros_like(U)
+            vU = torch.zeros_like(U)
+            mV = torch.zeros_like(V)
+            vV = torch.zeros_like(V)
+            beta1, beta2, eps = 0.9, 0.999, 1e-8
+
+            self._sync()
+            t0 = time.perf_counter()
+            for t in range(1, iterations + 1):
+                # pred = X @ U @ V
+                XU = self.X @ U                       # [B, r]
+                pred = XU @ V                          # [B, out]
+                error = pred - self.Y                  # [B, out]
+                # ∂/∂V = (X@U)^T · error / B, ∂/∂U = X^T · (error @ V^T) / B
+                gV = XU.T @ error / self.batch_size
+                gU = self.X.T @ (error @ V.T) / self.batch_size
+                mU.mul_(beta1).add_(gU, alpha=1 - beta1)
+                vU.mul_(beta2).addcmul_(gU, gU, value=1 - beta2)
+                mV.mul_(beta1).add_(gV, alpha=1 - beta1)
+                vV.mul_(beta2).addcmul_(gV, gV, value=1 - beta2)
+                bc1 = 1 - beta1 ** t
+                bc2 = 1 - beta2 ** t
+                U.sub_(lr * (mU / bc1) / ((vU / bc2).sqrt() + eps))
+                V.sub_(lr * (mV / bc1) / ((vV / bc2).sqrt() + eps))
+            self._sync()
+            elapsed = time.perf_counter() - t0
+            mse = float(torch.mean(((self.X @ U) @ V - self.Y) ** 2).item())
+            return mse, elapsed
+
+        for _ in range(max(0, warmup)):
+            _one(seed=999)
+        self._reset_peak_mem()
+        mses: list[float] = []
+        times: list[float] = []
+        for s in range(seeds):
+            mse, dt = _one(seed=s)
+            mses.append(mse)
+            times.append(dt)
+        peak = self._peak_mem_gb()
+        params = r * (self.in_features + self.out_features)
+        # Per iter: 2 matmuls forward + 2 grad matmuls backward, each O(B·in·r) or
+        # O(B·r·out); use the larger dim conservatively.
+        flops_per_call = (
+            iterations * 4 * 2 * self.batch_size * r
+            * max(self.in_features, self.out_features)
+        )
+        return self._aggregate(
+            f"Adam low-rank (W=U@V, r={r})",
+            params, mses, times, peak, flops=flops_per_call,
+        )
+
+    # -- 5. Project unconstrained Dense Exact to rank-r (Eckart–Young) ---------
+
+    def run_project_to_rank(
+        self,
+        *,
+        warmup: int = 1,
+        seeds: int = 1,
+        rank: int | None = None,
+    ) -> BenchmarkResult:
+        """Solve dense lstsq, then SVD-truncate the solution to rank ``r``.
+
+        This reports the **rank-r Eckart–Young lower bound** on the MSE
+        achievable by any rank-r linear model (under the ``X^T X`` metric we
+        approximate via SVD on the lstsq solution itself). DMRG should
+        approach this bound on rank-bounded targets.
+        """
+        r = rank if rank is not None else self.rank
+
+        def _one() -> tuple[float, float]:
+            self._sync()
+            t0 = time.perf_counter()
+            W = torch.linalg.lstsq(self.X, self.Y).solution
+            from ..core.svd import robust_svd, truncate
+            svd_res = truncate(robust_svd(W), r)
+            W_lr = (svd_res.U * svd_res.S) @ svd_res.Vh
+            self._sync()
+            elapsed = time.perf_counter() - t0
+            mse = float(torch.mean((self.X @ W_lr - self.Y) ** 2).item())
+            return mse, elapsed
+
+        for _ in range(max(0, warmup)):
+            _one()
+        self._reset_peak_mem()
+        mses: list[float] = []
+        times: list[float] = []
+        for _ in range(seeds):
+            mse, dt = _one()
+            mses.append(mse)
+            times.append(dt)
+        peak = self._peak_mem_gb()
+        params = r * (self.in_features + self.out_features)
+        flops_per_call = (
+            2 * self.batch_size * self.in_features * self.out_features
+            + self.in_features ** 3
+            + min(self.in_features, self.out_features) * self.in_features * self.out_features
+        )
+        return self._aggregate(
+            f"Project Dense->rank-{r} (SVD truncate)",
+            params, mses, times, peak, flops=flops_per_call,
         )
 
 

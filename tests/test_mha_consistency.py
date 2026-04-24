@@ -56,3 +56,26 @@ def test_ttmha_dmrg_step_reduces_projection_mse() -> None:
     mse_after = float(torch.mean((mha.W_Q(X) - Y_Q) ** 2).item())
     assert mse_after <= mse_before * (1.0 + 1.0e-6)
     assert set(results.keys()) == {"Q", "K", "V"}
+
+
+def test_ttmha_dmrg_step_can_skip_untouched_projections() -> None:
+    torch.manual_seed(9)
+    mha = TTMultiHeadAttention(
+        embed_dim=16, num_heads=2,
+        input_dims=[4, 4], output_dims=[4, 4], rank=4,
+        dtype=torch.float64,
+    )
+    gt = TTMultiHeadAttention(
+        embed_dim=16, num_heads=2,
+        input_dims=[4, 4], output_dims=[4, 4], rank=4,
+        dtype=torch.float64,
+    )
+    X = torch.randn(32, 16, dtype=torch.float64)
+    Y_K = gt.W_K(X)
+
+    mse_before = float(torch.mean((mha.W_K(X) - Y_K) ** 2).item())
+    results = mha.dmrg_step_projections(X, None, Y_K, None, lam=0.0)
+    mse_after = float(torch.mean((mha.W_K(X) - Y_K) ** 2).item())
+
+    assert set(results.keys()) == {"K"}
+    assert mse_after <= mse_before * (1.0 + 1.0e-6)

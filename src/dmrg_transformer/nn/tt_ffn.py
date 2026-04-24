@@ -96,6 +96,7 @@ class TTFeedForward(nn.Module):
         *,
         lam: float = 1.0e-5,
         target_blend: float = 0.5,
+        adaptive_threshold: float | None = None,
     ) -> dict[str, SweepReport]:
         """Exact-solver update: fc2 sweep → propagate back → fc1 sweep.
 
@@ -106,6 +107,8 @@ class TTFeedForward(nn.Module):
             target_blend: ``∈ [0, 1]`` blending factor for the pre-GELU target
                 (1.0 = greedy, 0.0 = no update). Mirrors the outer-loop
                 "learning rate" used in :mod:`scripts.train_real_world_classifier`.
+            adaptive_threshold: Optional relative singular value threshold for
+                rank truncation inside each :meth:`TTLinear.dmrg_step`.
 
         Returns:
             ``{"fc1": SweepReport, "fc2": SweepReport}``.
@@ -117,7 +120,9 @@ class TTFeedForward(nn.Module):
         _, z1, h1 = self.forward_with_cache(X_flat)
 
         # 2) Sweep fc2 against the supplied output target.
-        rep_fc2 = self.fc2.dmrg_step(h1, Y_flat, lam=lam)
+        rep_fc2 = self.fc2.dmrg_step(
+            h1, Y_flat, lam=lam, adaptive_threshold=adaptive_threshold,
+        )
 
         # 3) Pull the output target back through fc2 to a post-GELU target.
         W2_dense = self.fc2.to_dense_weight()  # [hidden, embed]
@@ -134,7 +139,9 @@ class TTFeedForward(nn.Module):
         z1_target = torch.where(active, z1_target_active, z1)
 
         # 5) Sweep fc1 against the pre-GELU target.
-        rep_fc1 = self.fc1.dmrg_step(X_flat, z1_target, lam=lam)
+        rep_fc1 = self.fc1.dmrg_step(
+            X_flat, z1_target, lam=lam, adaptive_threshold=adaptive_threshold,
+        )
 
         return {"fc1": rep_fc1, "fc2": rep_fc2}
 

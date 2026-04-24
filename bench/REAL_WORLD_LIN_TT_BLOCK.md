@@ -10,12 +10,12 @@
 
 | Model | Train acc | **Test acc** | Params | Wall (s) | Peak GPU (MiB) |
 | :---- | --------: | -----------: | -----: | -------: | -------------: |
-| TT-DMRG (no grads) | 0.8622 | **0.8611** | 1,946 | 52.34 | 373.9 |
-| Dense (AdamW, MSE) | 0.9896 | **0.9806** | 1,946 | 87.35 | 302.7 |
-| Dense (AdamW, CE)  | 1.0000 | **0.9667** | 1,946 | 87.32 | 302.6 |
+| TT-DMRG (no grads) | 0.8546 | **0.8667** | 1,946 | 19.50 | 115.9 |
+| Dense (AdamW, MSE) | 0.9896 | **0.9806** | 1,946 | 61.47 | 42.7 |
+| Dense (AdamW, CE)  | 1.0000 | **0.9667** | 1,946 | 82.43 | 42.6 |
 
-**Measured DMRG → Adam-MSE gap:** +11.94 pp  
-**Measured DMRG → Adam-CE  gap:** +10.56 pp
+**Measured DMRG → Adam-MSE gap:** +11.39 pp  
+**Measured DMRG → Adam-CE  gap:** +10.00 pp
 
 ## Iso-time fairness check
 
@@ -23,12 +23,12 @@ Both Adam baselines were sampled every 10 optimizer steps. The table below repor
 
 | Comparison | Wall budget (s) | Test acc at budget | Final test acc | Final wall (s) |
 | :--------- | --------------: | -----------------: | -------------: | -------------: |
-| TT-DMRG (reference) | 52.34 | **0.8611** | 0.8611 | 52.34 |
-| Dense Adam-MSE @ TT-DMRG budget | 51.04 | **0.9806** | 0.9806 | 87.35 |
-| Dense Adam-CE  @ TT-DMRG budget | 51.06 | **0.9639** | 0.9667 | 87.32 |
+| TT-DMRG (reference) | 19.50 | **0.8667** | 0.8667 | 19.50 |
+| Dense Adam-MSE @ TT-DMRG budget | 19.30 | **0.9722** | 0.9806 | 61.47 |
+| Dense Adam-CE  @ TT-DMRG budget | 19.26 | **0.9611** | 0.9667 | 82.43 |
 
-**Iso-time DMRG → Adam-MSE gap:** +11.94 pp  
-**Iso-time DMRG → Adam-CE  gap:** +10.28 pp
+**Iso-time DMRG → Adam-MSE gap:** +10.56 pp  
+**Iso-time DMRG → Adam-CE  gap:** +9.44 pp
 
 ## Inference latency (held-out test set)
 
@@ -36,58 +36,58 @@ Median over 20 forward passes after 5 warmup runs. Batch sizes: full = 360 examp
 
 | Model | Latency batch=1 (ms) | Latency batch=full (ms) | Throughput (ex/s, batch=full) |
 | :---- | -------------------: | ----------------------: | ----------------------------: |
-| TT-DMRG | 8.599 | 16.027 | 22462 |
-| Dense (AdamW, MSE) | 3.030 | 21.521 | 16728 |
-| Dense (AdamW, CE)  | 3.617 | 20.615 | 17463 |
+| TT-DMRG | 13.073 | 15.788 | 22802 |
+| Dense (AdamW, MSE) | 3.600 | 20.544 | 17523 |
+| Dense (AdamW, CE)  | 3.549 | 20.663 | 17422 |
 
 ## DMRG sub-update acceptance rates
 
 Trust-region accept/revert is applied separately to the input projection (W_in, b_in) and the joint Q/K/V attention update. Rejection means the candidate update worsened the trust-region objective and was rolled back.
 
-* **Input-projection accept rate:** 33.3% (4/12 epochs)
-* **Attention (Q/K/V) accept rate:** 0.0% (0/12 epochs)
+* **Input-projection accept rate:** 8.3% (1/12 epochs)
+* **Attention (Q/K/V) accept rate:** 8.3% (1/12 epochs)
 
 A persistently low attention accept rate is the leading indicator for the residual Adam gap on this task — see *root causes* below.
 
 ## Behavioral agreement on test set
 
-* TT-DMRG ↔ Dense-MSE: **0.8750**
-* TT-DMRG ↔ Dense-CE:  **0.8472**
+* TT-DMRG ↔ Dense-MSE: **0.8667**
+* TT-DMRG ↔ Dense-CE:  **0.8611**
 * Dense-MSE ↔ Dense-CE: **0.9472** (sanity check)
 
 ## Per-epoch test accuracy
 
 | Epoch | TT-DMRG | Dense (MSE) | Dense (CE) |
 | ----: | ------: | ----------: | ---------: |
-| 1 | 0.8500 | 0.7528 | 0.8944 |
-| 2 | 0.8694 | 0.9222 | 0.9611 |
-| 3 | 0.8667 | 0.9444 | 0.9611 |
-| 4 | 0.8722 | 0.9667 | 0.9667 |
-| 5 | 0.8583 | 0.9694 | 0.9639 |
-| 6 | 0.8528 | 0.9750 | 0.9639 |
-| 7 | 0.8611 | 0.9806 | 0.9639 |
+| 1 | 0.8028 | 0.7528 | 0.8944 |
+| 2 | 0.8167 | 0.9222 | 0.9611 |
+| 3 | 0.8250 | 0.9444 | 0.9611 |
+| 4 | 0.8194 | 0.9667 | 0.9667 |
+| 5 | 0.8250 | 0.9694 | 0.9639 |
+| 6 | 0.8389 | 0.9750 | 0.9639 |
+| 7 | 0.8528 | 0.9806 | 0.9639 |
 | 8 | 0.8583 | 0.9833 | 0.9667 |
-| 9 | 0.8611 | 0.9861 | 0.9667 |
-| 10 | 0.8667 | 0.9833 | 0.9667 |
+| 9 | 0.8583 | 0.9861 | 0.9667 |
+| 10 | 0.8639 | 0.9833 | 0.9667 |
 | 11 | 0.8639 | 0.9861 | 0.9667 |
-| 12 | 0.8611 | 0.9806 | 0.9667 |
+| 12 | 0.8667 | 0.9806 | 0.9667 |
 
 ## TTBlock per-epoch global MSE (block forward target tracking)
 
 | Epoch | MSE before sweep | MSE after sweep |
 | ----: | ---------------: | --------------: |
-| 1 | 1.403e+00 | 4.805e-02 |
-| 2 | 1.027e+00 | 4.643e-02 |
-| 3 | 9.573e-01 | 4.609e-02 |
-| 4 | 9.940e-01 | 4.673e-02 |
-| 5 | 4.655e-02 | 4.669e-02 |
-| 6 | 4.640e-02 | 4.631e-02 |
-| 7 | 4.606e-02 | 4.544e-02 |
-| 8 | 4.577e-02 | 4.499e-02 |
-| 9 | 3.071e-01 | 4.421e-02 |
-| 10 | 2.904e-01 | 4.363e-02 |
-| 11 | 2.632e-01 | 4.325e-02 |
-| 12 | 2.252e-01 | 4.295e-02 |
+| 1 | 1.303e-02 | 1.251e-02 |
+| 2 | 3.150e-03 | 3.101e-03 |
+| 3 | 2.283e-03 | 2.261e-03 |
+| 4 | 1.951e-03 | 1.938e-03 |
+| 5 | 1.806e-03 | 1.797e-03 |
+| 6 | 1.680e-03 | 1.675e-03 |
+| 7 | 1.577e-03 | 1.573e-03 |
+| 8 | 1.502e-03 | 1.499e-03 |
+| 9 | 1.449e-03 | 1.447e-03 |
+| 10 | 1.410e-03 | 1.408e-03 |
+| 11 | 1.378e-03 | 1.376e-03 |
+| 12 | 1.350e-03 | 1.349e-03 |
 
 ## Confusion matrices (held-out test set)
 
@@ -95,16 +95,16 @@ A persistently low attention accept rate is the leading indicator for the residu
 
 | true \ pred | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
 | :- | -: | -: | -: | -: | -: | -: | -: | -: | -: | -: |
-| **0** | 35 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| **1** | 0 | 27 | 2 | 0 | 0 | 1 | 1 | 0 | 2 | 3 |
-| **2** | 1 | 2 | 28 | 1 | 0 | 0 | 0 | 1 | 2 | 0 |
-| **3** | 0 | 0 | 2 | 33 | 0 | 0 | 0 | 1 | 0 | 1 |
+| **0** | 35 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
+| **1** | 0 | 22 | 4 | 2 | 2 | 1 | 1 | 0 | 1 | 3 |
+| **2** | 0 | 1 | 32 | 0 | 0 | 1 | 0 | 0 | 1 | 0 |
+| **3** | 2 | 0 | 1 | 32 | 0 | 0 | 0 | 0 | 0 | 2 |
 | **4** | 0 | 0 | 0 | 0 | 36 | 0 | 0 | 0 | 0 | 0 |
-| **5** | 0 | 0 | 0 | 0 | 0 | 34 | 1 | 0 | 0 | 2 |
-| **6** | 0 | 1 | 0 | 0 | 0 | 1 | 34 | 0 | 0 | 0 |
-| **7** | 0 | 0 | 0 | 0 | 3 | 0 | 0 | 33 | 0 | 0 |
-| **8** | 2 | 7 | 2 | 0 | 0 | 1 | 0 | 1 | 21 | 1 |
-| **9** | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 3 | 1 | 29 |
+| **5** | 0 | 0 | 0 | 0 | 0 | 34 | 1 | 1 | 0 | 1 |
+| **6** | 0 | 0 | 0 | 0 | 0 | 1 | 35 | 0 | 0 | 0 |
+| **7** | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 35 | 0 | 0 |
+| **8** | 0 | 9 | 0 | 0 | 1 | 3 | 1 | 0 | 21 | 0 |
+| **9** | 1 | 0 | 0 | 2 | 0 | 1 | 0 | 2 | 0 | 30 |
 
 ### Dense (AdamW + MSE)
 

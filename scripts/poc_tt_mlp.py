@@ -33,6 +33,13 @@ from sklearn.model_selection import train_test_split
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from dmrg_transformer.bench._instrumentation import (  # noqa: E402
+    dump_coverage_sidecar,
+    iso_time_lookup,
+    measure_inference_latency,
+    read_peak_mem_mib,
+    reset_peak_mem,
+)
 from dmrg_transformer.core.device import describe_device, require_cuda  # noqa: E402
 from dmrg_transformer.nn import TTLinear  # noqa: E402
 from dmrg_transformer.propagation.target_propagator import TargetPropagator  # noqa: E402
@@ -189,8 +196,13 @@ def train_dense(model: DenseMlp, X: torch.Tensor, Y_onehot: torch.Tensor,
                 y: torch.Tensor, X_te: torch.Tensor, y_te: torch.Tensor,
                 *, loss_kind: str) -> dict[str, list]:
     opt = torch.optim.AdamW(model.parameters(), lr=ADAM_LR)
-    history = {"epoch": [], "train_acc": [], "test_acc": [], "wall": []}
+    history: dict[str, list] = {
+        "epoch": [], "train_acc": [], "test_acc": [], "wall": [],
+        "step_wall": [], "step_test_acc": [],  # iso-time samples per Adam step
+    }
+    reset_peak_mem()
     t0 = time.perf_counter()
+    step_idx = 0
     for epoch in range(1, EPOCHS + 1):
         model.train()
         for _ in range(ADAM_ITERS_PER_EPOCH):
@@ -202,6 +214,13 @@ def train_dense(model: DenseMlp, X: torch.Tensor, Y_onehot: torch.Tensor,
                 loss = torch.nn.functional.cross_entropy(logits, y)
             loss.backward()
             opt.step()
+            step_idx += 1
+            if step_idx % 10 == 0:
+                model.eval()
+                with torch.no_grad():
+                    history["step_wall"].append(time.perf_counter() - t0)
+                    history["step_test_acc"].append(accuracy(model(X_te), y_te))
+                model.train()
         model.eval()
         with torch.no_grad():
             tr_acc = accuracy(model(X), y)
@@ -211,12 +230,14 @@ def train_dense(model: DenseMlp, X: torch.Tensor, Y_onehot: torch.Tensor,
         history["test_acc"].append(te_acc)
         history["wall"].append(time.perf_counter() - t0)
         print(f"  Dense({loss_kind})  ep{epoch}: train_acc={tr_acc:.4f} test_acc={te_acc:.4f}")
+    history["peak_mem_mib"] = read_peak_mem_mib()
     return history
 
 
 def train_tt(model: TTMlp, data: dict) -> dict[str, list]:
     history = {"epoch": [], "train_acc": [], "test_acc": [], "wall": [],
                "layer1_mse": [], "layer2_mse": []}
+    reset_peak_mem()
     t0 = time.perf_counter()
     for epoch in range(1, EPOCHS + 1):
         rep = model.train_epoch(data["X_tr"], data["Y_tr_onehot"])
@@ -235,6 +256,7 @@ def train_tt(model: TTMlp, data: dict) -> dict[str, list]:
             f"  TT-DMRG    ep{epoch}: train_acc={tr_acc:.4f} test_acc={te_acc:.4f}  "
             f"L1_mse={rep['layer1_final_mse']:.3e} L2_mse={rep['layer2_final_mse']:.3e}"
         )
+    history["peak_mem_mib"] = read_peak_mem_mib()
     return history
 
 
@@ -428,6 +450,52 @@ def main() -> None:
 
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"\nWrote {out.relative_to(ROOT)}")
+
+    # ---- Coverage-matrix sidecar (Phase E) ----
+    X_te_full = data["X_te"]
+    X_te_one = data["X_te"][:1]
+    inf_tt_full = measure_inference_latency(lambda x: tt.forward(x)[2], X_te_full)
+    inf_tt_one = measure_inference_latency(lambda x: tt.forward(x)[2], X_te_one)
+    inf_mse_full = measure_inference_latency(lambda x: dense_mse(x), X_te_full)
+    inf_ce_full = measure_inference_latency(lambda x: dense_ce(x), X_te_full)
+    tt_total_wall = tt_hist["wall"][-1]
+    iso_mse_acc, iso_mse_wall = iso_time_lookup(dense_mse_hist, tt_total_wall)
+    iso_ce_acc, iso_ce_wall = iso_time_lookup(dense_ce_hist, tt_total_wall)
+    sidecar = {
+        "tier": "tier1_mlp",
+        "label": "TT-MLP (depth 2, no attention)",
+        "device": describe_device(),
+        "n_classes": int(n_classes),
+        "params": {"tt": int(tt_params), "dense": int(dense_params)},
+        "tt": {
+            "train_acc": tt_hist["train_acc"][-1],
+            "test_acc": tt_hist["test_acc"][-1],
+            "wall_s": tt_hist["wall"][-1],
+            "peak_mem_mib": tt_hist.get("peak_mem_mib", 0.0),
+            "inference_full_ms": inf_tt_full["median_ms"],
+            "inference_b1_ms": inf_tt_one["median_ms"],
+        },
+        "adam_mse": {
+            "train_acc": dense_mse_hist["train_acc"][-1],
+            "test_acc": dense_mse_hist["test_acc"][-1],
+            "iso_time_test_acc": iso_mse_acc,
+            "iso_time_wall_s": iso_mse_wall,
+            "wall_s": dense_mse_hist["wall"][-1],
+            "peak_mem_mib": dense_mse_hist.get("peak_mem_mib", 0.0),
+            "inference_full_ms": inf_mse_full["median_ms"],
+        },
+        "adam_ce": {
+            "train_acc": dense_ce_hist["train_acc"][-1],
+            "test_acc": dense_ce_hist["test_acc"][-1],
+            "iso_time_test_acc": iso_ce_acc,
+            "iso_time_wall_s": iso_ce_wall,
+            "wall_s": dense_ce_hist["wall"][-1],
+            "peak_mem_mib": dense_ce_hist.get("peak_mem_mib", 0.0),
+            "inference_full_ms": inf_ce_full["median_ms"],
+        },
+    }
+    sidecar_path = dump_coverage_sidecar("tier1_mlp", sidecar)
+    print(f"Wrote {sidecar_path.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

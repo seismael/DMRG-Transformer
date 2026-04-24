@@ -13,9 +13,9 @@ This is **not** synthetic regression on `sin(X·W)+noise`. It is a real supervis
 
 | Model | Train acc | **Test acc** | Params | Wall (s) | Trainer |
 | :---- | --------: | -----------: | -----: | -------: | :------ |
-| TT-MLP (DMRG, no grads) | 0.9026 | **0.8833** | 1,194 | 1.81 | DMRG sweeps + target propagation |
-| Dense MLP (AdamW, MSE)  | 0.9972 | **0.9778** | 2,410 | 2.03 | AdamW + MSE on one-hot (matched loss) |
-| Dense MLP (AdamW, CE)   | 1.0000 | **0.9694** | 2,410 | 1.89 | AdamW + cross-entropy (conventional) |
+| TT-MLP (DMRG, no grads) | 0.9026 | **0.8833** | 1,194 | 2.11 | DMRG sweeps + target propagation |
+| Dense MLP (AdamW, MSE)  | 0.9972 | **0.9778** | 2,410 | 2.41 | AdamW + MSE on one-hot (matched loss) |
+| Dense MLP (AdamW, CE)   | 1.0000 | **0.9694** | 2,410 | 2.46 | AdamW + cross-entropy (conventional) |
 
 **TT compression vs dense:** 2.02× (2,410 → 1,194 parameters).
 
@@ -42,7 +42,7 @@ Fraction of the test set where the two models predict the same class:
 
 * TT-DMRG ↔ Dense-MSE: **0.8778**
 * TT-DMRG ↔ Dense-CE:  **0.8889**
-* Dense-MSE ↔ Dense-CE: **0.9611**  (sanity check — same arch, same trainer family)
+* Dense-MSE ↔ Dense-CE: **0.9611** (sanity check — same arch, same trainer family)
 
 If the DMRG-trained network were merely fitting noise, its predictions would diverge sharply from the gradient-trained models; the high agreement ratio shows it has learned the **same input→class mapping**.
 

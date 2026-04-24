@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import torch
 
+from dmrg_transformer.core.device import require_cuda
 from dmrg_transformer.nn.tt_block import TTBlock, _AffineLN
 
 
@@ -10,7 +11,7 @@ def test_affine_ln_init_is_identity_with_frozen_layernorm() -> None:
     """At init γ=1, β=0 — must be bit-exact with elementwise_affine=False LN."""
     torch.manual_seed(0)
     f = 12
-    affine = _AffineLN(features=f, eps=1.0e-5, dtype=torch.float64)
+    affine = _AffineLN(features=f, eps=1.0e-5, dtype=torch.float64, device=require_cuda())
     ref = torch.nn.LayerNorm(
         f, eps=1.0e-5, elementwise_affine=False, dtype=torch.float64,
     )
@@ -22,7 +23,7 @@ def test_affine_ln_ols_recovers_known_target() -> None:
     """If y_target = γ*·z + β* exactly, the OLS update must recover (γ*, β*)."""
     torch.manual_seed(1)
     f = 8
-    affine = _AffineLN(features=f, eps=1.0e-5, dtype=torch.float64)
+    affine = _AffineLN(features=f, eps=1.0e-5, dtype=torch.float64, device=require_cuda())
     x = torch.randn(64, f, dtype=torch.float64)
     z = affine._standardize(x)
     gamma_star = torch.linspace(0.5, 2.0, f, dtype=torch.float64)
@@ -102,3 +103,24 @@ def test_ttblock_ln_affine_buffers_are_not_parameters() -> None:
     assert "ln1.beta" not in param_names
     assert "ln2.gamma" not in param_names
     assert "ln2.beta" not in param_names
+
+
+def test_ttblock_ln_buffers_pin_to_project_device_without_default_device() -> None:
+    """Benchmark-style construction must place LN buffers on the project device
+    even if the ambient torch default device is CPU.
+    """
+    project_device = require_cuda()
+    torch.set_default_device("cpu")
+    try:
+        block = TTBlock(
+            embed_dim=12, num_heads=2, hidden_dim=12,
+            embed_dims=[3, 4], hidden_dims=[3, 4],
+            rank=4, propagator_lam=1.0e-2, dtype=torch.float64,
+        )
+    finally:
+        torch.set_default_device(project_device)
+
+    assert block.ln1.gamma.device == project_device
+    assert block.ln1.beta.device == project_device
+    assert block.ln2.gamma.device == project_device
+    assert block.ln2.beta.device == project_device

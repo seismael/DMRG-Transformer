@@ -1,11 +1,30 @@
-"""``TTMultiHeadAttention`` — MHA with TT-factorized projection matrices.
+"""``TTLinearAttention`` — multi-head linear attention with TT-factorized projections.
 
-Each of ``W_Q``, ``W_K``, ``W_V``, ``W_out`` is an independent :class:`TTLinear`.
-The current Python prototype dispatches the independent ``Q/K/V`` projection
-sweeps to separate CUDA streams when available. This is only a **partial**
-analog of `MEMORY_ARENA.md` §5: stream assignment is per projection rather than
-per head, ``W_out`` is handled by the caller, and full event-driven orchestration
-is deferred to the Phase-IV Rust microkernel.
+Replaces the softmax kernel ``softmax(Q Kᵀ/√d) V`` with a feature-map kernel:
+
+        φ(x) = elu(x) + 1                              (Katharopoulos et al., 2020)
+
+        out_q = ( φ(Q_q) · Σ_k φ(K_k) V_kᵀ ) / ( φ(Q_q) · Σ_k φ(K_k) + ε )
+
+Why this matters for DMRG
+-------------------------
+In softmax attention the V-update target arrives via three successive
+pinv pull-backs (W_out → residual → softmax-aware A·V inversion). Each
+pinv injects approximation error and the V LSQ objective stops being
+aligned with the global MSE — see ``bench/PHASE0_DIAGNOSTIC.md``.
+
+In linear attention the attention-V composition is *multilinear* in the
+projection cores once φ is fixed: numerator = ``φ(Q)·Sᵀ`` with the
+per-batch state ``S = Σ_k φ(K_k) V_kᵀ`` of shape ``[d_h, d_h]``. The V
+update therefore reduces to a closed-form LSQ on the global loss directly
+(modulo the fixed denominator), and the Target-Propagation Drift hole
+identified in REVIEW.md / Phase 0 disappears at the V step.
+
+This module deliberately mirrors :class:`dmrg_transformer.nn.tt_mha.TTMultiHeadAttention`
+in shape and constructor signature so it is a drop-in replacement at the
+TTBlock level. The DMRG step itself is implemented later in
+``TTLinearAttentionBlock``; this module only owns the forward pass and
+the per-projection sweeps.
 """
 from __future__ import annotations
 
@@ -17,8 +36,13 @@ from torch import nn
 from dmrg_transformer.nn.tt_linear import TTLinear
 
 
-class TTMultiHeadAttention(nn.Module):
-    """Multi-Head Attention with TT-factorized projection weights.
+def elu_plus_one(x: torch.Tensor) -> torch.Tensor:
+    """Positive feature map ``φ(x) = elu(x) + 1``. Element-wise, range (0, ∞)."""
+    return torch.nn.functional.elu(x) + 1.0
+
+
+class TTLinearAttention(nn.Module):
+    """Multi-head linear attention with TT-factorized Q/K/V/W_out projections.
 
     Args:
         embed_dim: model dimension (``d_model``).
@@ -27,6 +51,7 @@ class TTMultiHeadAttention(nn.Module):
         output_dims: factorization of ``embed_dim`` for the TT cores.
         rank: TT-rank bound for every projection.
         dtype: storage dtype for TT cores.
+        eps: denominator stabilizer.
     """
 
     def __init__(
@@ -38,6 +63,7 @@ class TTMultiHeadAttention(nn.Module):
         output_dims: list[int],
         rank: int,
         dtype: torch.dtype = torch.float64,
+        eps: float = 1.0e-6,
     ) -> None:
         super().__init__()
         if embed_dim % num_heads != 0:
@@ -51,6 +77,7 @@ class TTMultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.rank = rank
+        self.eps = float(eps)
 
         def make_proj() -> TTLinear:
             return TTLinear(
@@ -64,7 +91,7 @@ class TTMultiHeadAttention(nn.Module):
         self.W_V = make_proj()
         self.W_out = make_proj()
 
-    # -- forward -----------------------------------------------------------------
+    # -- forward ---------------------------------------------------------------
 
     @torch.no_grad()
     def forward(
@@ -73,7 +100,7 @@ class TTMultiHeadAttention(nn.Module):
         key: torch.Tensor | None = None,
         value: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Scaled dot-product attention.
+        """Linear-attention forward pass.
 
         Shapes:
             query, key, value: ``[batch, seq, embed_dim]``. ``key`` and ``value``
@@ -85,18 +112,26 @@ class TTMultiHeadAttention(nn.Module):
             value = query
         B, L_q, _ = query.shape
         L_k = key.shape[1]
+        H, d_h = self.num_heads, self.head_dim
 
-        Q = self._project(self.W_Q, query).reshape(B, L_q, self.num_heads, self.head_dim)
-        K = self._project(self.W_K, key).reshape(B, L_k, self.num_heads, self.head_dim)
-        V = self._project(self.W_V, value).reshape(B, L_k, self.num_heads, self.head_dim)
-        # Transpose to [B, H, L, d_h].
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        scale = self.head_dim**-0.5
-        scores = torch.einsum("bhqd,bhkd->bhqk", Q, K) * scale
-        attn = torch.softmax(scores, dim=-1)
-        context = torch.einsum("bhqk,bhkd->bhqd", attn, V)
+        Q = self._project(self.W_Q, query).reshape(B, L_q, H, d_h).transpose(1, 2)  # [B,H,L_q,d_h]
+        K = self._project(self.W_K, key).reshape(B, L_k, H, d_h).transpose(1, 2)
+        V = self._project(self.W_V, value).reshape(B, L_k, H, d_h).transpose(1, 2)
+
+        phiQ = elu_plus_one(Q)
+        phiK = elu_plus_one(K)
+
+        # KV state: S[b,h,i,j] = Σ_k phiK[b,h,k,i] * V[b,h,k,j]   shape [B,H,d_h,d_h]
+        S = torch.einsum("bhki,bhkj->bhij", phiK, V)
+        # Z[b,h,i] = Σ_k phiK[b,h,k,i]                            shape [B,H,d_h]
+        Z = phiK.sum(dim=-2)
+
+        # numerator[b,h,q,j] = Σ_i phiQ[b,h,q,i] * S[b,h,i,j]
+        num = torch.einsum("bhqi,bhij->bhqj", phiQ, S)
+        # denom[b,h,q] = Σ_i phiQ[b,h,q,i] * Z[b,h,i]
+        denom = torch.einsum("bhqi,bhi->bhq", phiQ, Z).unsqueeze(-1) + self.eps
+
+        context = num / denom                                              # [B,H,L_q,d_h]
         context = context.transpose(1, 2).reshape(B, L_q, self.embed_dim)
         return self._project(self.W_out, context)
 
@@ -120,24 +155,16 @@ class TTMultiHeadAttention(nn.Module):
         lam: float = 1.0e-5,
         adaptive_threshold: float | None = None,
     ) -> dict[str, float]:
-        """Run per-projection exact-solver updates given layer-local targets.
+        """Per-projection exact-solver updates given layer-local targets.
 
-        ``Q``, ``K``, and ``V`` are mathematically independent once their
-        layer-local targets are fixed, so the Python prototype can dispatch
-        those three sweeps to distinct CUDA streams when a GPU is available.
-        Any projection whose target is ``None`` is skipped; this allows the
-        caller to apply separate trust-region gates to the coupled ``Q/K``
-        and ``V`` stages without mutating untouched projections.
-
-        This helper intentionally stops short of full `MEMORY_ARENA.md` §5
-        compliance: it does not create a per-head stream pool, does not update
-        ``W_out`` here, and ends with a synchronization barrier. Those pieces
-        remain Phase-IV systems work.
+        Identical contract to :meth:`TTMultiHeadAttention.dmrg_step_projections`
+        so block-level orchestration code can dispatch either flavor uniformly.
+        Q, K and V projections are each independent TTLinear LSQ problems
+        once their targets are fixed; CUDA stream dispatch is reused.
         """
         use_streams = X.is_cuda and torch.cuda.is_available()
         results: dict[str, float] = {}
         jobs: list[tuple[str, TTLinear, torch.Tensor]] = []
-
         if Y_Q is not None:
             jobs.append(("Q", self.W_Q, Y_Q))
         if Y_K is not None:
@@ -157,13 +184,6 @@ class TTMultiHeadAttention(nn.Module):
 
         if use_streams:
             streams = [torch.cuda.Stream() for _ in range(len(jobs))]
-            # CUDA does not auto-track tensor data dependencies across streams.
-            # Each fresh side stream must explicitly wait on the producer stream
-            # of ``X`` and the per-job ``tgt`` (default stream at call time);
-            # otherwise side-stream kernels can read stale memory while the
-            # default stream is still writing the targets, producing silently
-            # wrong solver results identical across calls (because the same
-            # uninitialized region keeps getting reused).
             producer = torch.cuda.current_stream()
             for stream, (name, proj, tgt) in zip(streams, jobs, strict=True):
                 stream.wait_stream(producer)

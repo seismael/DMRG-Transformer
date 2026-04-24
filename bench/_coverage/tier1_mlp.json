@@ -1,0 +1,36 @@
+{
+  "tier": "tier1_mlp",
+  "label": "TT-MLP (depth 2, no attention)",
+  "device": "device=cuda:0 (NVIDIA GeForce MX150, sm_61, 2.0 GiB)",
+  "n_classes": 10,
+  "params": {
+    "tt": 1194,
+    "dense": 2410
+  },
+  "tt": {
+    "train_acc": 0.9025748372077942,
+    "test_acc": 0.8833333253860474,
+    "wall_s": 2.114947900059633,
+    "peak_mem_mib": 29.9931640625,
+    "inference_full_ms": 3.5876999609172344,
+    "inference_b1_ms": 2.8224000707268715
+  },
+  "adam_mse": {
+    "train_acc": 0.9972164630889893,
+    "test_acc": 0.9777777791023254,
+    "iso_time_test_acc": 0.9777777791023254,
+    "iso_time_wall_s": 2.097739199991338,
+    "wall_s": 2.4071740000508726,
+    "peak_mem_mib": 19.0458984375,
+    "inference_full_ms": 0.6675999611616135
+  },
+  "adam_ce": {
+    "train_acc": 1.0,
+    "test_acc": 0.9694444537162781,
+    "iso_time_test_acc": 0.9694444537162781,
+    "iso_time_wall_s": 2.108406100072898,
+    "wall_s": 2.4580192000139505,
+    "peak_mem_mib": 18.974609375,
+    "inference_full_ms": 0.701499986462295
+  }
+}

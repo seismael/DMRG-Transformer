@@ -1,0 +1,38 @@
+{
+  "tier": "tier2_one_block",
+  "label": "1x TTBlock (attention + FFN + LN + residual)",
+  "device": "device=cuda:0 (NVIDIA GeForce MX150, sm_61, 2.0 GiB)",
+  "n_classes": 10,
+  "params": {
+    "tt": 1946,
+    "dense": 1946
+  },
+  "tt": {
+    "train_acc": 0.8622129559516907,
+    "test_acc": 0.8611111044883728,
+    "wall_s": 52.344752199947834,
+    "peak_mem_mib": 373.853515625,
+    "inference_full_ms": 16.027200035750866,
+    "inference_b1_ms": 8.598700049333274,
+    "input_proj_accept_rate": 0.3333333333333333,
+    "attn_accept_rate": 0.0
+  },
+  "adam_mse": {
+    "train_acc": 0.9895616173744202,
+    "test_acc": 0.9805555939674377,
+    "iso_time_test_acc": 0.9805555939674377,
+    "iso_time_wall_s": 51.043365499936044,
+    "wall_s": 87.35300579993054,
+    "peak_mem_mib": 302.66259765625,
+    "inference_full_ms": 21.521100075915456
+  },
+  "adam_ce": {
+    "train_acc": 1.0,
+    "test_acc": 0.9666666984558105,
+    "iso_time_test_acc": 0.9638888835906982,
+    "iso_time_wall_s": 51.05860919994302,
+    "wall_s": 87.31849289999809,
+    "peak_mem_mib": 302.58837890625,
+    "inference_full_ms": 20.61479992698878
+  }
+}

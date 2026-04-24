@@ -111,10 +111,14 @@ class TTLinear(nn.Module):
         *,
         lam: float = 1.0e-5,
         clamp_target: bool = True,
+        adaptive_threshold: float | None = None,
     ) -> SweepReport:
         """Exact-solver weight update. Returns the sweep report (initial/final MSE)."""
         tt = self._view_tt()
-        opt = DMRGOptimizer(max_rank=self.rank, lam=lam, clamp_target=clamp_target)
+        opt = DMRGOptimizer(
+            max_rank=self.rank, lam=lam, clamp_target=clamp_target,
+            adaptive_threshold=adaptive_threshold,
+        )
         X_cast = X.to(dtype=tt.get_core(0).dtype)
         # Subtract bias from target so the solver focuses only on the TT part.
         if self._has_bias:
