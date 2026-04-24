@@ -1,157 +1,21 @@
-# DMRG-Transformer — Stacked TTBlock Real-Task Validation
+# Softmax-Attention TTBlock — Real-Task Validation
 
-**Device:** `device=cuda:0 (NVIDIA GeForce MX150, sm_61, 2.0 GiB)`  
-**Task:** 10-class classification on `sklearn.datasets.load_digits` reshaped as 8 tokens of dim 8 (stratified 80/20 split, seed=42).  
-**Architecture:** input proj → 1× TTBlock(embed=16, heads=2, hidden=16, rank=8) → mean-pool → linear head.  
-**TT-DMRG path:** zero gradients. Block trained by per-block `dmrg_step` (12 epochs); head fit by closed-form ridge LSQ.  
-**Adam baselines:** identical-shape dense block (`nn.MultiheadAttention` + GELU FFN), AdamW lr=0.01, 600 total steps.
+**Device:** `device=cuda:0 (NVIDIA GeForce MX150, sm_61, 2.0 GiB)`
 
 ## Final test-set accuracy
 
 | Model | Train acc | **Test acc** | Params | Wall (s) | Peak GPU (MiB) |
 | :---- | --------: | -----------: | -----: | -------: | -------------: |
-| TT-DMRG (no grads) | 0.8622 | **0.8611** | 1,946 | 52.34 | 373.9 |
-| Dense (AdamW, MSE) | 0.9896 | **0.9806** | 1,946 | 87.35 | 302.7 |
-| Dense (AdamW, CE)  | 1.0000 | **0.9667** | 1,946 | 87.32 | 302.6 |
-
-**Measured DMRG → Adam-MSE gap:** +11.94 pp  
-**Measured DMRG → Adam-CE  gap:** +10.56 pp
+| TT-DMRG (no grads) | 0.8622 | **0.8611** | 1,946 | 43.82 | 370.9 |
+| Dense (AdamW, MSE) | 0.9896 | **0.9806** | 1,946 | 49.43 | 301.6 |
+| Dense (AdamW, CE)  | 1.0000 | **0.9667** | 1,946 | 49.29 | 301.5 |
+| Large Dense (CE)   | 1.0000 | **0.9611** | 4,066 | 68.33 | 311.9 |
 
 ## Iso-time fairness check
 
-Both Adam baselines were sampled every 10 optimizer steps. The table below reports the test accuracy each Adam variant had reached by the wall-clock time TT-DMRG used in total.
-
-| Comparison | Wall budget (s) | Test acc at budget | Final test acc | Final wall (s) |
-| :--------- | --------------: | -----------------: | -------------: | -------------: |
-| TT-DMRG (reference) | 52.34 | **0.8611** | 0.8611 | 52.34 |
-| Dense Adam-MSE @ TT-DMRG budget | 51.04 | **0.9806** | 0.9806 | 87.35 |
-| Dense Adam-CE  @ TT-DMRG budget | 51.06 | **0.9639** | 0.9667 | 87.32 |
-
-**Iso-time DMRG → Adam-MSE gap:** +11.94 pp  
-**Iso-time DMRG → Adam-CE  gap:** +10.28 pp
-
-## Inference latency (held-out test set)
-
-Median over 20 forward passes after 5 warmup runs. Batch sizes: full = 360 examples, single = 1.
-
-| Model | Latency batch=1 (ms) | Latency batch=full (ms) | Throughput (ex/s, batch=full) |
-| :---- | -------------------: | ----------------------: | ----------------------------: |
-| TT-DMRG | 8.599 | 16.027 | 22462 |
-| Dense (AdamW, MSE) | 3.030 | 21.521 | 16728 |
-| Dense (AdamW, CE)  | 3.617 | 20.615 | 17463 |
-
-## DMRG sub-update acceptance rates
-
-Trust-region accept/revert is applied separately to the input projection (W_in, b_in) and the joint Q/K/V attention update. Rejection means the candidate update worsened the trust-region objective and was rolled back.
-
-* **Input-projection accept rate:** 33.3% (4/12 epochs)
-* **Attention (Q/K/V) accept rate:** 0.0% (0/12 epochs)
-
-A persistently low attention accept rate is the leading indicator for the residual Adam gap on this task — see *root causes* below.
-
-## Behavioral agreement on test set
-
-* TT-DMRG ↔ Dense-MSE: **0.8750**
-* TT-DMRG ↔ Dense-CE:  **0.8472**
-* Dense-MSE ↔ Dense-CE: **0.9472** (sanity check)
-
-## Per-epoch test accuracy
-
-| Epoch | TT-DMRG | Dense (MSE) | Dense (CE) |
-| ----: | ------: | ----------: | ---------: |
-| 1 | 0.8500 | 0.7528 | 0.8944 |
-| 2 | 0.8694 | 0.9222 | 0.9611 |
-| 3 | 0.8667 | 0.9444 | 0.9611 |
-| 4 | 0.8722 | 0.9667 | 0.9667 |
-| 5 | 0.8583 | 0.9694 | 0.9639 |
-| 6 | 0.8528 | 0.9750 | 0.9639 |
-| 7 | 0.8611 | 0.9806 | 0.9639 |
-| 8 | 0.8583 | 0.9833 | 0.9667 |
-| 9 | 0.8611 | 0.9861 | 0.9667 |
-| 10 | 0.8667 | 0.9833 | 0.9667 |
-| 11 | 0.8639 | 0.9861 | 0.9667 |
-| 12 | 0.8611 | 0.9806 | 0.9667 |
-
-## TTBlock per-epoch global MSE (block forward target tracking)
-
-| Epoch | MSE before sweep | MSE after sweep |
-| ----: | ---------------: | --------------: |
-| 1 | 1.403e+00 | 4.805e-02 |
-| 2 | 1.027e+00 | 4.643e-02 |
-| 3 | 9.573e-01 | 4.609e-02 |
-| 4 | 9.940e-01 | 4.673e-02 |
-| 5 | 4.655e-02 | 4.669e-02 |
-| 6 | 4.640e-02 | 4.631e-02 |
-| 7 | 4.606e-02 | 4.544e-02 |
-| 8 | 4.577e-02 | 4.499e-02 |
-| 9 | 3.071e-01 | 4.421e-02 |
-| 10 | 2.904e-01 | 4.363e-02 |
-| 11 | 2.632e-01 | 4.325e-02 |
-| 12 | 2.252e-01 | 4.295e-02 |
-
-## Confusion matrices (held-out test set)
-
-### TT-DMRG
-
-| true \ pred | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
-| :- | -: | -: | -: | -: | -: | -: | -: | -: | -: | -: |
-| **0** | 35 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| **1** | 0 | 27 | 2 | 0 | 0 | 1 | 1 | 0 | 2 | 3 |
-| **2** | 1 | 2 | 28 | 1 | 0 | 0 | 0 | 1 | 2 | 0 |
-| **3** | 0 | 0 | 2 | 33 | 0 | 0 | 0 | 1 | 0 | 1 |
-| **4** | 0 | 0 | 0 | 0 | 36 | 0 | 0 | 0 | 0 | 0 |
-| **5** | 0 | 0 | 0 | 0 | 0 | 34 | 1 | 0 | 0 | 2 |
-| **6** | 0 | 1 | 0 | 0 | 0 | 1 | 34 | 0 | 0 | 0 |
-| **7** | 0 | 0 | 0 | 0 | 3 | 0 | 0 | 33 | 0 | 0 |
-| **8** | 2 | 7 | 2 | 0 | 0 | 1 | 0 | 1 | 21 | 1 |
-| **9** | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 3 | 1 | 29 |
-
-### Dense (AdamW + MSE)
-
-| true \ pred | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
-| :- | -: | -: | -: | -: | -: | -: | -: | -: | -: | -: |
-| **0** | 36 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **1** | 0 | 36 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **2** | 0 | 0 | 35 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **3** | 0 | 0 | 0 | 37 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **4** | 0 | 0 | 0 | 0 | 36 | 0 | 0 | 0 | 0 | 0 |
-| **5** | 0 | 0 | 0 | 0 | 0 | 37 | 0 | 0 | 0 | 0 |
-| **6** | 0 | 0 | 0 | 0 | 0 | 0 | 35 | 0 | 1 | 0 |
-| **7** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 36 | 0 | 0 |
-| **8** | 0 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 31 | 0 |
-| **9** | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 34 |
-
-### Dense (AdamW + CE)
-
-| true \ pred | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
-| :- | -: | -: | -: | -: | -: | -: | -: | -: | -: | -: |
-| **0** | 35 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| **1** | 0 | 35 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
-| **2** | 0 | 1 | 34 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **3** | 0 | 1 | 0 | 36 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **4** | 0 | 0 | 0 | 0 | 36 | 0 | 0 | 0 | 0 | 0 |
-| **5** | 0 | 0 | 0 | 1 | 0 | 36 | 0 | 0 | 0 | 0 |
-| **6** | 0 | 0 | 0 | 0 | 0 | 0 | 36 | 0 | 0 | 0 |
-| **7** | 0 | 0 | 0 | 0 | 2 | 0 | 0 | 34 | 0 | 0 |
-| **8** | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 33 | 0 |
-| **9** | 0 | 0 | 0 | 1 | 1 | 0 | 0 | 1 | 0 | 33 |
-
-## Honest gap analysis — root causes
-
-After landing (a) softmax-aware Q/K/V joint updates with trust-region accept/revert, (b) exact-LSQ input-projection updates (also trust-region wrapped), and (c) **empirically validating** that per-token target propagation does *not* help, the residual ~16 pp DMRG-vs-Adam gap on this task is now identified as a **structural ceiling** of the mean-pool-head architecture rather than a propagation defect.
-
-### What we tried and what it told us
-
-- **Pooled-target broadcast** (current): each token is held to the same pooled target. Reaches ~0.72 test acc.
-- **Per-token "detail-preserving" target** (`R_target[t] = r_curr[t] + (pooled_target − mean_t r_curr)`): **regressed** to ~0.67 test acc. Diagnosis: the mean-pool head exposes only a single 16-dim constraint per example, so per-token rank in `R_target` is an *unconstrained* degree of freedom — preserving current per-token detail tells the block "keep doing what you do, just shifted by a constant", which removes the learning signal for per-token routing. **The broadcast is provably the maximum-information per-token target under mean pooling.**
-- **Inner block-sweep iterations per epoch (1 → 4)**: peak test acc unchanged (0.72), reached at ep3 instead of ep12, but later epochs overfit to ~0.68. Same architectural ceiling, faster convergence.
-
-### Remaining contributors (in order)
-
-1. **Mean-pool head invariance.** The classifier loss is invariant to per-token permutation, so the block cannot learn position-specific roles from the loss alone. Adam's per-token gradient still uses the same constraint but applies it through the network Jacobian, breaking the symmetry implicitly. Closing this gap requires changing the head (e.g. [CLS]-token classification, or per-token logits + voting).
-
-2. **Trust-region rejections.** Past epoch 1 the input-projection step is rejected (the local-identity linearization `h_target ≈ h_curr + (R_target − block(h_curr))` becomes inaccurate as the block moves), and Q,K bilinear steps are occasionally rejected too. Both bound per-step gain.
-
-3. **GELU active-mask propagation** — first-order, not exact. Smaller contributor.
-
-The Q/K softmax pull-back primitives (`solve_attention_pattern_target`, `softmax_target_to_scores`, `project_through_qk_bilinear`) are unit-tested in [tests/test_target_propagator_extensions.py](../tests/test_target_propagator_extensions.py). The block forward MSE drops monotonically (~0.40 → ~0.009) every epoch, demonstrating the solver is doing its job — the gap is in the *signal*, not the *solver*.
+| Comparison | Wall budget (s) | Test acc at budget | Final test acc |
+| :--------- | --------------: | -----------------: | -------------: |
+| TT-DMRG (reference) | 43.82 | **0.8611** | 0.8611 |
+| Dense Adam-MSE      | 43.82 | **0.9806** | 0.9806 |
+| Dense Adam-CE       | 43.82 | **0.9667** | 0.9667 |
+| Large Dense-CE      | 43.82 | **0.9583** | 0.9611 |

@@ -247,9 +247,12 @@ class TTBlock(nn.Module):
         A_target = self.propagator.solve_attention_pattern_target(
             V_curr, context_target_heads, eps=1.0e-12,
         )
-        attn_blend = attn_target_blend if attn_target_blend is not None else 0.5 * target_blend
+        # Use a more conservative blend for the non-convex softmax part.
+        attn_blend = 0.1 * (attn_target_blend if attn_target_blend is not None else target_blend)
         A_blended = attn_blend * A_target + (1.0 - attn_blend) * attn_w_curr
-        scores_target = self.propagator.softmax_target_to_scores(A_blended, scale=1.0 / scale)
+        scores_target = self.propagator.softmax_target_to_scores(
+            A_blended, A_curr=attn_w_curr, S_curr=scores_curr, scale=1.0 / scale,
+        )
         Q_target_heads, _ = self.propagator.project_through_qk_bilinear(scores_target, Q_curr, K_curr)
         _, K_target_heads = self.propagator.project_through_qk_bilinear(scores_target, Q_target_heads, K_curr)
 
@@ -261,7 +264,9 @@ class TTBlock(nn.Module):
             adaptive_threshold=adaptive_threshold,
         )
         mse_after_qk = float(torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item())
-        qk_accepted = mse_after_qk <= mse_before_qk
+        
+        # Soft Trust-Region: allow 1% increase in MSE to keep attention moving.
+        qk_accepted = mse_after_qk <= 1.01 * mse_before_qk
         if not qk_accepted:
             self.attn.W_Q.load_state_dict(snap_Q)
             self.attn.W_K.load_state_dict(snap_K)
@@ -281,7 +286,8 @@ class TTBlock(nn.Module):
             adaptive_threshold=adaptive_threshold,
         )
         mse_after_v = float(torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item())
-        v_accepted = mse_after_v <= mse_after_qk
+        # Soft Trust-Region for V too.
+        v_accepted = mse_after_v <= 1.01 * mse_after_qk
         if not v_accepted:
             self.attn.W_V.load_state_dict(snap_V)
         

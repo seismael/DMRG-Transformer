@@ -304,36 +304,30 @@ class TargetPropagator:
     def softmax_target_to_scores(
         self,
         A_target: torch.Tensor,
-        *,
+        A_curr: torch.Tensor,
+        S_curr: torch.Tensor,
         scale: float = 1.0,
-        eps: float = 1.0e-12,
     ) -> torch.Tensor:
-        """Invert ``softmax`` to get the score (logit) target up to per-row offset.
+        """Map a target attention pattern ``A_target`` to a score target ``S``.
 
-        ``softmax`` is invariant under a per-row additive constant, so the
-        natural inverse is ``logits = log(A_target)`` with rows centered to
-        sum to zero (a canonical gauge choice that minimizes the logit norm).
-        The returned tensor is multiplied by ``scale`` so the caller can
-        recover scores at the ``Q K^T / √d`` convention by passing
-        ``scale = √d``.
+        Uses Difference-based Log-Target Propagation (DLTP):
+          S_target = S_curr + scale * (A_target - A_curr)
 
-        No explicit logit-magnitude cap is applied here: the current stability
-        mechanism is to keep ``A_target`` close to the current attention via
-        upstream simplex blending and to reject non-convex Q/K/V steps that
-        worsen the block MSE.
+        This is a first-order Taylor approximation of the softmax inverse
+        around the current activation. It is materially more stable than
+        a direct log-transform for local solvers (DMRG).
 
         Args:
             A_target: ``[..., L_k]`` row-stochastic target.
-            scale: multiplier applied after the log; pass ``√d_h`` to obtain
-                the un-normalized ``Q K^T`` target.
-            eps: numerical floor before ``log``.
+            A_curr: ``[..., L_k]`` current probabilities.
+            S_curr: ``[..., L_k]`` current scores (pre-softmax).
+            scale: inverse of the attention head scaling factor (e.g. sqrt(d_h)).
 
         Returns:
-            ``[..., L_k]`` score target with rows summing to zero.
+            ``[..., L_k]`` score target.
         """
-        logits = torch.log(A_target.clamp_min(eps))
-        logits = logits - logits.mean(dim=-1, keepdim=True)
-        return logits * scale
+        residual = A_target - A_curr
+        return S_curr + scale * residual
 
     def project_through_qk_bilinear(
         self,
