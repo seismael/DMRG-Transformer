@@ -115,5 +115,5 @@ Demonstrates the per-layer least-squares solver is converging monotonically, not
 ## Honest limitations
 
 * The model is a 2-layer MLP, not a full Transformer block. Stacking attention + LayerNorm + residual under target propagation is the next milestone (Phase C2–C4 in [docs/COMPLIANCE.md](../docs/COMPLIANCE.md)). What this script *does* prove is that the DMRG solver + the target propagator together learn a non-trivial, generalizing classifier — i.e. the architecture works as a real neural-network trainer, not just a curve-fitter.
-* sklearn's 8×8 digits is a small dataset by modern standards; it was chosen to keep the experiment reproducible on the project's reference 2 GiB MX150. The scaling behavior at 1024×1024 layers is documented in [bench/HEADLINE.md](HEADLINE.md).
-* The TT compression ratio at this scale (2.0×) is modest because the model is tiny; the compression payoff grows with layer width (see [bench/PARETO.md](PARETO.md)).
+* sklearn's 8×8 digits is a small dataset by modern standards; it was chosen to keep the experiment reproducible on the project's reference 2 GiB MX150. The scaling behavior at 1024×1024 layers is documented in [docs/BENCHMARK.md](../docs/BENCHMARK.md).
+* The TT compression ratio at this scale (2.0×) is modest because the model is tiny; the compression payoff grows with layer width (see the Pareto sweep in `scripts/run_pareto.py`).

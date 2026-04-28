@@ -1,21 +1,26 @@
 # AGENTS.md: DMRG-Transformer Implementation Directives
+**Version:** 1.1.0
+**Status:** Validated Python reference implementation (Gates 1–3 passed). Phase IV (Rust/CUDA) deferred.
 **Target Audience:** Autonomous Coding Agents (Cursor, Copilot, Devin, custom LLM wrappers).
-**Role Assignment:** You are operating as a Lead Systems Architect and Quantum Optimization Engineer. Your sole objective is to implement the exact-solver DMRG-Transformer architecture.
+**Role:** Lead Systems Architect and Quantum Optimization Engineer.
 
 ## 0. REQUIRED READING MATRIX (BLOCKING)
-You are strictly forbidden from writing any code until you have read and parsed the following documentation files in the repository root. They contain the exact mathematical and physical constraints for this project.
-1. `ARCHITECTURE.md` (System topology and OOD interfaces)
-2. `TENSOR_TOPOLOGY.md` (Einsum strings and strict rank boundaries)
-3. `NUMERICAL_STABILITY.md` (SVD fallbacks and Tikhonov regularization)
-4. `MEMORY_ARENA.md` (Rust/CUDA zero-allocation lifetimes)
+You are strictly forbidden from writing any code until you have read and parsed the following documentation files. They contain the exact mathematical and physical constraints for this project.
+1. `docs/ARCHITECTURE.md` — System topology, OOD interfaces, execution pipeline
+2. `docs/TENSOR_TOPOLOGY.md` — Einsum strings and strict rank boundaries
+3. `docs/NUMERICAL_STABILITY.md` — SVD fallback hierarchy and Tikhonov regularization
+4. `docs/MEMORY_ARENA.md` — Double-buffer contract (Python prototype; Rust Phase IV deferred)
+5. `docs/SOLVER_MATH.md` — Formal proofs of exactness and O(d·n·r³) complexity
+6. `docs/COMPLIANCE.md` — Spec-to-implementation traceability matrix
+7. `README.md` — Quick start, measured results, project structure
 
 ## 1. Prime Directives & Absolute Constraints
 You are building a post-Gradient Descent neural network. You must fundamentally disregard standard deep learning optimization paradigms.
 
-* **CONSTRAINT 1 (NO GRADIENTS):** You are strictly forbidden from using `loss.backward()`, `tf.GradientTape`, or any auto-differentiation graph for weight updates.
-* **CONSTRAINT 2 (NO ITERATIVE OPTIMIZERS):** You are strictly forbidden from implementing SGD, Adam, RMSprop, or any optimizer that relies on a "learning rate."
-* **CONSTRAINT 3 (NO DENSE INVERSIONS):** You are strictly forbidden from inverting any matrix larger than the predefined TT-Rank bounds. $\mathcal{O}(N^3)$ operations on the global parameter space will result in immediate failure.
-* **CONSTRAINT 4 (MEMORY MUTABILITY):** When orchestrating left/right orthogonal environment blocks ($L$, $R$), you must update them in-place. Do not allocate new massive tensors in memory during the Alternating Linear Scheme (ALS) sweep. Refer to `MEMORY_ARENA.md`.
+* **CONSTRAINT 1 (NO GRADIENTS):** You are strictly forbidden from using `loss.backward()`, `tf.GradientTape`, or any auto-differentiation graph for weight updates. An AST scan (`tests/test_constraints.py`) enforces this.
+* **CONSTRAINT 2 (NO ITERATIVE OPTIMIZERS):** You are strictly forbidden from implementing SGD, Adam, RMSprop, or any optimizer that relies on a "learning rate." The Adam implementation exists only in `scripts/` PoC comparisons and in `bench/benchmark.py` for baseline measurement — never in `src/`.
+* **CONSTRAINT 3 (NO DENSE INVERSIONS):** You are strictly forbidden from inverting any matrix larger than the predefined TT-Rank bounds. O(N³) operations on the global parameter space will result in immediate failure. All solves use block-diagonal normal equations of size `(r·i_k·r)²` or the matrix-free CG path.
+* **CONSTRAINT 4 (MEMORY MUTABILITY):** When orchestrating left/right orthogonal environment blocks (L, R), you must update them in-place via the `EnvironmentCache` and `MemoryArena` contracts. Do not allocate new massive tensors in memory during the Alternating Linear Scheme (ALS) sweep.
 
 ## 2. Core Architectural Mappings
 When translating standard Transformer concepts into this framework, adhere to these exact mappings:
@@ -24,40 +29,45 @@ When translating standard Transformer concepts into this framework, adhere to th
 | :--- | :--- |
 | `nn.Linear(in, out)` | `TensorTrain(cores=[G_1, ..., G_d], ranks=r)` |
 | `optimizer.step()` | `DMRGOptimizer.sweep_and_truncate(tt, target)` |
-| Backpropagation (Chain Rule) | Layer-wise Target Propagation (Pseudo-inverse) |
+| Backpropagation (Chain Rule) | Layer-wise Target Propagation (pseudo-inverse) |
 | Weight Update Calculation | Local SVD Projection (See `TENSOR_TOPOLOGY.md`) |
-| Regularization / Weight Decay | Eckart-Young-Mirsky SVD Truncation (drop singular values $> r$) |
+| Regularization / Weight Decay | Eckart-Young-Mirsky SVD Truncation (drop singular values > r) |
 
 ## 3. Implementation Phasing & Validation Gates
 Do not proceed to a subsequent phase until the current phase passes its specific Validation Gate.
 
 ### PHASE I: The Mathematical Primitives (Tensor Train Core)
-**Task:** Implement the base `ITensorTrain` interface. Create the logic to decompose a standard matrix into TT-cores using TT-SVD, and the logic to contract them back for the forward pass.
-**Validation Gate 1:** * Generate a dense $1024 \times 1024$ random matrix.
-* Decompose it into a Tensor Train with maximum rank $r=32$.
-* Reconstruct the dense matrix.
-* **Pass Condition:** The reconstruction error (Frobenius norm) must exactly match the theoretical truncation bound of the discarded singular values.
+**Status:** ✅ COMPLETE. Implemented in `src/dmrg_transformer/tt/tensor_train.py`, `src/dmrg_transformer/core/svd.py`.
+**Validation Gate 1:** Generate a dense 1024×1024 random matrix, decompose into TT with max rank r=32, reconstruct. The reconstruction error (Frobenius norm) must exactly match the theoretical truncation bound of the discarded singular values.
+**Evidence:** `tests/test_gate1_reconstruction.py` — passes.
 
 ### PHASE II: The Orthogonalization Engine
-**Task:** Implement the Left-to-Right and Right-to-Left orthogonalization sweeps using QR decomposition. (Apply `float64` casting as per `NUMERICAL_STABILITY.md`).
-**Validation Gate 2:**
-* After a left-orthogonalization sweep to core $k$, extract the left environment block $L_{<k}$.
-* **Pass Condition:** Compute $L_{<k}^T L_{<k}$. The result MUST be the Identity Matrix ($I$) to machine precision (`< 1e-7` error). If it is not $I$, the exact solver in Phase III will fail.
+**Status:** ✅ COMPLETE. Implemented in `src/dmrg_transformer/tt/gauge.py`, `src/dmrg_transformer/core/qr.py`.
+**Validation Gate 2:** After a left-orthogonalization sweep, compute `LᵀL`. The result MUST be the Identity Matrix (I) to machine precision (< 1e-7 error).
+**Evidence:** `tests/test_gate2_orthogonality.py` — passes.
 
 ### PHASE III: The DMRG Local Solver
-**Task:** Implement the exact local solver. Project the target tensor into the local subspace, solve for the core, and truncate via SVD. (Implement the SVD Fallback Hierarchy as per `NUMERICAL_STABILITY.md`).
-**Validation Gate 3:**
-* Create a single TT-layer. Pass synthetic data forward.
-* Use a standard dense Least Squares solver to find the absolute global minimum for that layer.
-* Run a single left-to-right DMRG sweep.
-* **Pass Condition:** The MSE of the DMRG sweep must converge to the exact same MSE as the Dense Exact Solver, but execute in $\mathcal{O}(d \cdot n \cdot r^3)$ time instead of $\mathcal{O}(N^3)$ time.
+**Status:** ✅ COMPLETE. Implemented in `src/dmrg_transformer/optim/sweep.py`, `src/dmrg_transformer/optim/local_solver.py`.
+**Validation Gate 3:** Create a single TT-layer. Run dense least squares vs DMRG sweep. The MSE of the DMRG sweep must converge to the exact same MSE as the Dense Exact Solver, but execute in O(d·n·r³) time instead of O(N³).
+**Evidence:** `tests/test_gate3_exact_parity.py` and `bench/GATE3_PROOF.md` — passes (DMRG MSE = 1.349e-29 vs Dense = 2.386e-30).
 
 ### PHASE IV: Systems Integration (Rust/CUDA)
-**Task:** Port the validated logic into the high-performance Rust Microkernel, binding to `cuTensorNet` for contractions and `cuSOLVER` for SVD/QR using Double Buffering.
-**Validation Gate 4:**
-* Ensure zero memory leaks across 1,000 sweep cycles.
-* **Pass Condition:** Profiling must show GPU Tensor Cores maintaining $>80\%$ utilization during the sweep, verifying that CUDA branching is minimized and allocations are zero.
+**Status:** ⏳ DEFERRED. Python prototype only (`src/dmrg_transformer/core/arena.py`).
+**Implementation needed:** Port the validated logic into a Rust microkernel with cuTensorNet for contractions and cuSOLVER for SVD/QR using double buffering. Requires sm_70+ GPU for Tensor Cores and cuTensorNet.
+**Validation Gate 4:** Zero memory leaks across 1,000 sweep cycles. Profiling must show GPU Tensor Cores maintaining >80% utilization.
+**Pre-requisites:** Hardware with Volta+ architecture (sm_70+). Not achievable on current MX150 (sm_61).
 
-## 4. Agent Acknowledgment Protocol
-Before writing any code or executing any shell commands, you must read all files listed in the `REQUIRED READING MATRIX`. When prompted to begin, respond with: 
-*"DMRG Optimization Protocol Acknowledged. Iterative Gradient Descent is disabled. All documentation files ingested. Initializing Phase I."*
+## 4. Authorized Single Call Sites
+The following operations MUST only be invoked from their designated module:
+
+| Operation | Authorized Module |
+| :--- | :--- |
+| `torch.linalg.svd` / `scipy.linalg.svd` | `src/dmrg_transformer/core/svd.py` (via `robust_svd()`) |
+| `torch.linalg.qr` | `src/dmrg_transformer/core/qr.py` (via `qr_f64()`) |
+| Direct TT-core modification | `src/dmrg_transformer/tt/tensor_train.py` (via `update_core()`) |
+| Environment block computation | `src/dmrg_transformer/tt/environments.py` |
+| Gauge/orthogonalization | `src/dmrg_transformer/tt/gauge.py` |
+
+## 5. Agent Acknowledgment Protocol
+Before writing any code or executing any shell commands, read all files listed in §0 REQUIRED READING MATRIX. When prompted to begin, respond with:
+*"DMRG Optimization Protocol Acknowledged. Iterative Gradient Descent is disabled. All documentation files ingested."*
