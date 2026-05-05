@@ -4,17 +4,30 @@
 **Target Audience:** Autonomous Coding Agents (Cursor, Copilot, Devin, custom LLM wrappers).
 **Role:** Lead Systems Architect and Quantum Optimization Engineer.
 
-## 0. REQUIRED READING MATRIX (BLOCKING)
-You are strictly forbidden from writing any code until you have read and parsed the following documentation files. They contain the exact mathematical and physical constraints for this project.
-1. `docs/ARCHITECTURE.md` — System topology, OOD interfaces, execution pipeline
-2. `docs/TENSOR_TOPOLOGY.md` — Einsum strings and strict rank boundaries
-3. `docs/NUMERICAL_STABILITY.md` — SVD fallback hierarchy and Tikhonov regularization
-4. `docs/MEMORY_ARENA.md` — Double-buffer contract (Python prototype; Rust Phase IV deferred)
-5. `docs/SOLVER_MATH.md` — Formal proofs of exactness and O(d·n·r³) complexity
-6. `docs/COMPLIANCE.md` — Spec-to-implementation traceability matrix
-7. `README.md` — Quick start, measured results, project structure
+## 0. GRAPHIFY KNOWLEDGE GRAPH (PRIMARY SOURCE)
+This project has a graphify knowledge graph at `graphify-out/`. It contains 655 nodes and 941 edges extracted from the codebase. **Use it first** before reading raw files — it saves significant token usage and time.
 
-## 1. Prime Directives & Absolute Constraints
+**Fast answers (no file reads needed):**
+- `graphify query "<question>"` — natural-language search across the graph
+- `graphify path "<A>" "<B>"` — trace dependency chains between components
+- `graphify explain "<concept>"` — plain-language summary of any node
+
+**Quick orientation (low token cost):**
+- Read `graphify-out/GRAPH_REPORT.md` for god nodes, community structure, and surprising connections
+
+**After code changes:** Run `graphify update .` (AST-only, no API cost) to keep the graph current.
+
+## 1. REQUIRED READING MATRIX (FALLBACK)
+If the graph does not answer your question, you must read and parse the following documentation files. They contain the exact mathematical and physical constraints for this project.
+1. `README.md` — Quick start, measured results, project structure
+2. `docs/ARCHITECTURE.md` — System topology, OOD interfaces, execution pipeline
+3. `docs/TENSOR_TOPOLOGY.md` — Einsum strings and strict rank boundaries
+4. `docs/NUMERICAL_STABILITY.md` — SVD fallback hierarchy and Tikhonov regularization
+5. `docs/MEMORY_ARENA.md` — Double-buffer contract (Python prototype; Rust Phase IV deferred)
+6. `docs/SOLVER_MATH.md` — Formal proofs of exactness and O(d·n·r³) complexity
+7. `docs/COMPLIANCE.md` — Spec-to-implementation traceability matrix
+
+## 2. Prime Directives & Absolute Constraints
 You are building a post-Gradient Descent neural network. You must fundamentally disregard standard deep learning optimization paradigms.
 
 * **CONSTRAINT 1 (NO GRADIENTS):** You are strictly forbidden from using `loss.backward()`, `tf.GradientTape`, or any auto-differentiation graph for weight updates. An AST scan (`tests/test_constraints.py`) enforces this.
