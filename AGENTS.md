@@ -35,7 +35,7 @@ You are building a post-Gradient Descent neural network. You must fundamentally 
 * **CONSTRAINT 3 (NO DENSE INVERSIONS):** You are strictly forbidden from inverting any matrix larger than the predefined TT-Rank bounds. O(N³) operations on the global parameter space will result in immediate failure. All solves use block-diagonal normal equations of size `(r·i_k·r)²` or the matrix-free CG path.
 * **CONSTRAINT 4 (MEMORY MUTABILITY):** When orchestrating left/right orthogonal environment blocks (L, R), you must update them in-place via the `EnvironmentCache` and `MemoryArena` contracts. Do not allocate new massive tensors in memory during the Alternating Linear Scheme (ALS) sweep.
 
-## 2. Core Architectural Mappings
+## 3. Core Architectural Mappings
 When translating standard Transformer concepts into this framework, adhere to these exact mappings:
 
 | Standard Deep Learning Concept | DMRG-Transformer Equivalent (MUST USE) |
@@ -46,7 +46,7 @@ When translating standard Transformer concepts into this framework, adhere to th
 | Weight Update Calculation | Local SVD Projection (See `TENSOR_TOPOLOGY.md`) |
 | Regularization / Weight Decay | Eckart-Young-Mirsky SVD Truncation (drop singular values > r) |
 
-## 3. Implementation Phasing & Validation Gates
+## 4. Implementation Phasing & Validation Gates
 Do not proceed to a subsequent phase until the current phase passes its specific Validation Gate.
 
 ### PHASE I: The Mathematical Primitives (Tensor Train Core)
@@ -70,7 +70,7 @@ Do not proceed to a subsequent phase until the current phase passes its specific
 **Validation Gate 4:** Zero memory leaks across 1,000 sweep cycles. Profiling must show GPU Tensor Cores maintaining >80% utilization.
 **Pre-requisites:** Hardware with Volta+ architecture (sm_70+). Not achievable on current MX150 (sm_61).
 
-## 4. Authorized Single Call Sites
+## 5. Authorized Single Call Sites
 The following operations MUST only be invoked from their designated module:
 
 | Operation | Authorized Module |
@@ -81,7 +81,7 @@ The following operations MUST only be invoked from their designated module:
 | Environment block computation | `src/dmrg_transformer/tt/environments.py` |
 | Gauge/orthogonalization | `src/dmrg_transformer/tt/gauge.py` |
 
-## 5. Agent Acknowledgment Protocol
+## 6. Agent Acknowledgment Protocol
 Before writing any code or executing any shell commands, read all files listed in §0 REQUIRED READING MATRIX. When prompted to begin, respond with:
 *"DMRG Optimization Protocol Acknowledged. Iterative Gradient Descent is disabled. All documentation files ingested."*
 

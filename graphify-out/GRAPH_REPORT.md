@@ -1,8 +1,7 @@
-# Graph Report - DMRG-Transformer  (2026-05-05)
+# Graph Report - .  (2026-05-05)
 
 ## Corpus Check
-- 70 files · ~52,492 words
-- Verdict: corpus is large enough that graph structure adds value.
+- cluster-only mode — file stats not available
 
 ## Summary
 - 655 nodes · 941 edges · 47 communities (20 shown, 27 thin omitted)
@@ -10,7 +9,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `570d3286`
+- Built from commit: `326e2f02`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -178,11 +177,11 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.163) - this node is a cross-community bridge._
 - **Why does `TargetPropagator` connect `Community 2` to `Community 0`, `Community 4`, `Community 5`, `Community 9`, `Community 11`?**
   _High betweenness centrality (0.158) - this node is a cross-community bridge._
-- **Are the 28 inferred relationships involving `TargetPropagator` (e.g. with `TTMlp` and `DenseMlp`) actually correct?**
+- **Are the 28 inferred relationships involving `TargetPropagator` (e.g. with `TTMlp` and `.__init__()`) actually correct?**
   _`TargetPropagator` has 28 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 31 inferred relationships involving `require_cuda()` (e.g. with `main()` and `main()`) actually correct?**
   _`require_cuda()` has 31 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 8 inferred relationships involving `OptimizationBenchmark` (e.g. with `main()` and `main()`) actually correct?**
   _`OptimizationBenchmark` has 8 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 14 inferred relationships involving `TTLinear` (e.g. with `TTFeedForward` and `DMRGOptimizer`) actually correct?**
+- **Are the 14 inferred relationships involving `TTLinear` (e.g. with `.__init__()` and `TTFeedForward`) actually correct?**
   _`TTLinear` has 14 INFERRED edges - model-reasoned connections that need verification._
