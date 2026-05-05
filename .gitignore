@@ -158,3 +158,9 @@ Cargo.lock
 # OS files
 .DS_Store
 Thumbs.db
+
+# Graphify
+graphify-out/cache/
+
+# Pytest-benchmark
+.benchmarks/

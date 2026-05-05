@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DMRG-Transformer — graphify tree viewer</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h1 {
+      margin: 20px 0 0 24px;
+      font-size: 2.2rem;
+      font-weight: bold;
+      color: #1e3a56;
+    }
+    .controls {
+      margin: 20px 0 15px 24px;
+    }
+    button {
+      margin-right: 10px;
+      padding: 8px 18px;
+      background: #007bff;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.2s ease-in-out;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button:active {
+      background: #004085;
+    }
+    #tree-container {
+      width: calc(100vw - 48px); /* Adjust for body margin/padding */
+      height: 85vh;
+      overflow: auto;
+      border-radius: 8px;
+      background: #fff;
+      margin-left: 24px;
+      margin-right: 24px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      border: 1px solid #ddd;
+    }
+    svg {
+      background: #fff;
+      border-radius: 8px;
+      display: block; /* Important for D3 */
+    }
+    .node circle {
+      stroke-width: 2.5px;
+    }
+    .node text { /* Base style for the <text> container */
+      font: 13px 'Segoe UI', sans-serif;
+      paint-order: stroke fill; /* Ensures text is readable over lines */
+      stroke: #fff; /* White halo */
+      stroke-width: 3px; /* Halo thickness */
+      stroke-linejoin: round;
+      stroke-opacity: 0.85; /* Halo opacity */
+    }
+    .link {
+      fill: none;
+      stroke-opacity: 0.7;
+      stroke-width: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h1>DMRG-Transformer — Knowledge Graph</h1>
+  <div class="controls">
+    <button onclick="expandAll()">Expand All</button>
+    <button onclick="collapseAll()">Collapse All</button>
+    <button onclick="resetView()">Reset View</button>
+  </div>
+  <div id="tree-container">
+    <svg id="tree-svg" width="6000" height="8000"></svg>
+  </div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    const initialJsonData = {"name":"DMRG-Transformer","total_count":583,"children":[{"name":"scripts","total_count":73,"children":[{"name":"detect_cuda.py","total_count":2,"children":[{"name":"main()","total_count":1,"children":[]},{"name":"Verify the CUDA toolchain is wired up correctly.  Run with::      uv run pyt","total_count":1,"children":[]}]},{"name":"poc_linear_transformer.py","total_count":5,"children":[{"name":".train_epoch()","total_count":1,"children":[]},{"name":"_LinearTTBlockClassifier","total_count":1,"children":[]},{"name":"_patched_main()","total_count":1,"children":[]},{"name":"Subclass that replaces the softmax-flavored block sweep call.","total_count":1,"children":[]},{"name":"Tier-2 (1× block) classifier — linear-attention variant.  Drop-in counterpart","total_count":1,"children":[]}]},{"name":"poc_softmax_transformer.py","total_count":22,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".__init__()","total_count":1,"children":[]},{"name":".forward()","total_count":1,"children":[]},{"name":"_console_print()","total_count":1,"children":[]},{"name":"_console_safe()","total_count":1,"children":[]},{"name":"_fit_head_lsq()","total_count":1,"children":[]},{"name":"_mse_to_targets()","total_count":1,"children":[]},{"name":"_project_input()","total_count":1,"children":[]},{"name":"accuracy()","total_count":1,"children":[]},{"name":"confusion()","total_count":1,"children":[]},{"name":"DenseBlockClassifier","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"load_data()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"measure_inference_latency()","total_count":1,"children":[]},{"name":"num_parameters()","total_count":1,"children":[]},{"name":"Real-supervised-learning validation for the stacked TTBlock (plan §C-Validation)","total_count":1,"children":[]},{"name":"Return a console-safe rendering for Windows cp1252 terminals.","total_count":1,"children":[]},{"name":"train_dense()","total_count":1,"children":[]},{"name":"train_epoch()","total_count":1,"children":[]},{"name":"train_tt()","total_count":1,"children":[]},{"name":"TTBlockClassifier","total_count":1,"children":[]}]},{"name":"poc_tt_mlp.py","total_count":17,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".__init__()","total_count":1,"children":[]},{"name":".forward()","total_count":1,"children":[]},{"name":"2-layer TT-factorized MLP trained by DMRG sweeps + target propagation.","total_count":1,"children":[]},{"name":"_fmt_cm()","total_count":1,"children":[]},{"name":"accuracy()","total_count":1,"children":[]},{"name":"confusion()","total_count":1,"children":[]},{"name":"DenseMlp","total_count":1,"children":[]},{"name":"End-to-end supervised-learning validation: DMRG-trained TT-MLP vs Adam-trained d","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"load_data()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"num_parameters()","total_count":1,"children":[]},{"name":"train_dense()","total_count":1,"children":[]},{"name":"train_epoch()","total_count":1,"children":[]},{"name":"train_tt()","total_count":1,"children":[]},{"name":"TTMlp","total_count":1,"children":[]}]},{"name":"run_benchmarks.py","total_count":2,"children":[{"name":"main()","total_count":1,"children":[]},{"name":"Proof-of-concept benchmark sweep (GPU-only).","total_count":1,"children":[]}]},{"name":"run_coverage_matrix.py","total_count":5,"children":[{"name":"_fmt_num()","total_count":1,"children":[]},{"name":"_fmt_pct()","total_count":1,"children":[]},{"name":"_load()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"Phase E: aggregate `bench/_coverage/*.json` sidecars into COVERAGE_MATRIX.md.","total_count":1,"children":[]}]},{"name":"run_gate3_proof.py","total_count":2,"children":[{"name":"Gate-3 headline proof, rendered to ``bench/GATE3_PROOF.md`` (GPU-only).","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]}]},{"name":"run_headline_benchmark.py","total_count":2,"children":[{"name":"Headline benchmark — BENCHMARK.md spec at 1024x1024 (Phase A1+B1+B3 deliverable)","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]}]},{"name":"run_iso_rank_benchmark.py","total_count":4,"children":[{"name":"_format_row()","total_count":1,"children":[]},{"name":"_run_suite()","total_count":1,"children":[]},{"name":"Iso-rank fairness benchmark — Phase D of benchmark hardening.  The headline be","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]}]},{"name":"run_pareto.py","total_count":2,"children":[{"name":"main()","total_count":1,"children":[]},{"name":"Rank/MSE Pareto curve for TT-DMRG vs dense baseline (Phase B4 deliverable).  S","total_count":1,"children":[]}]},{"name":"run_poc_benchmark.py","total_count":9,"children":[{"name":"_fmt()","total_count":1,"children":[]},{"name":"_make_synthetic()","total_count":1,"children":[]},{"name":"_sync()","total_count":1,"children":[]},{"name":"main()","total_count":1,"children":[]},{"name":"Measurement","total_count":1,"children":[]},{"name":"Proof-of-concept benchmark: TT-DMRG vs Gradient Descent (GPU-only).  Honest te","total_count":1,"children":[]},{"name":"run_adam()","total_count":1,"children":[]},{"name":"run_dense_lstsq()","total_count":1,"children":[]},{"name":"run_dmrg()","total_count":1,"children":[]}]},{"name":"check.ps1","total_count":1,"children":[]}]},{"name":"src","total_count":306,"children":[{"name":"dmrg_transformer","total_count":306,"children":[{"name":"__init__.py","total_count":2,"children":[{"name":"__getattr__()","total_count":1,"children":[]},{"name":"DMRG-Transformer: post-Gradient-Descent neural optimization via Tensor Trains.","total_count":1,"children":[]}]},{"name":"bench","total_count":32,"children":[{"name":"__init__.py","total_count":1,"children":[{"name":"Benchmark harness (BENCHMARK.md reproduction).","total_count":1,"children":[]}]},{"name":"_instrumentation.py","total_count":9,"children":[{"name":"dump_coverage_sidecar()","total_count":1,"children":[]},{"name":"iso_time_lookup()","total_count":1,"children":[]},{"name":"measure_inference_latency()","total_count":1,"children":[]},{"name":"Median forward latency in milliseconds, with CUDA sync per call.","total_count":1,"children":[]},{"name":"read_peak_mem_mib()","total_count":1,"children":[]},{"name":"reset_peak_mem()","total_count":1,"children":[]},{"name":"Return (test_acc, wall) for the last sample with wall <= ``target_wall``.","total_count":1,"children":[]},{"name":"Shared GPU/wall/inference instrumentation for the Tier-1/2/3 runners.  Pulled","total_count":1,"children":[]},{"name":"Write ``bench/_coverage/<tier>.json`` for the matrix aggregator.","total_count":1,"children":[]}]},{"name":"benchmark.py","total_count":22,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"._aggregate()","total_count":1,"children":[]},{"name":"._peak_mem_gb()","total_count":1,"children":[]},{"name":"._reset_peak_mem()","total_count":1,"children":[]},{"name":"._sync()","total_count":1,"children":[]},{"name":".run_adam()","total_count":1,"children":[]},{"name":".run_adam_low_rank()","total_count":1,"children":[]},{"name":".run_dense_exact()","total_count":1,"children":[]},{"name":".run_dmrg()","total_count":1,"children":[]},{"name":".run_project_to_rank()","total_count":1,"children":[]},{"name":"_factor_for_tt()","total_count":1,"children":[]},{"name":"_factor_pair()","total_count":1,"children":[]},{"name":"Adam on ``W = U @ V`` with ``U: (in, r), V: (r, out)``.          This is the *","total_count":1,"children":[]},{"name":"BenchmarkResult","total_count":1,"children":[]},{"name":"Choose a TT factorization adapted to the size of ``n``.      For small ``n`` (","total_count":1,"children":[]},{"name":"execute()","total_count":1,"children":[]},{"name":"Faithful reproduction of BENCHMARK.md with identical dimensions.","total_count":1,"children":[]},{"name":"OptimizationBenchmark","total_count":1,"children":[]},{"name":"Reproduction of ``docs/BENCHMARK.md`` — the three-way optimizer runoff.  Invoc","total_count":1,"children":[]},{"name":"Return [a, b] with a*b == n and a as close to sqrt(n) as possible.","total_count":1,"children":[]},{"name":"Solve dense lstsq, then SVD-truncate the solution to rank ``r``.          This","total_count":1,"children":[]},{"name":"Synthetic in→out regression benchmark.          ``target_rank``: when ``None``","total_count":1,"children":[]}]}]},{"name":"core","total_count":75,"children":[{"name":"__init__.py","total_count":1,"children":[{"name":"Mathematical primitives layer.","total_count":1,"children":[]}]},{"name":"arena.py","total_count":16,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".svd_workspace()","total_count":1,"children":[]},{"name":".swap_left()","total_count":1,"children":[]},{"name":".swap_right()","total_count":1,"children":[]},{"name":".take_left()","total_count":1,"children":[]},{"name":".take_right()","total_count":1,"children":[]},{"name":".total_bytes()","total_count":1,"children":[]},{"name":"ArenaSpec","total_count":1,"children":[]},{"name":"MemoryArena","total_count":1,"children":[]},{"name":"Pre-allocated double-buffered storage for L/R environment blocks.      Buffers","total_count":1,"children":[]},{"name":"Promote the write buffer to the new active buffer (constant-time).","total_count":1,"children":[]},{"name":"Python prototype of the GPU MemoryArena (MEMORY_ARENA.md §2-§4).  This is the","total_count":1,"children":[]},{"name":"Return ``(read_buf, write_buf)`` for the L environment.          Caller reads","total_count":1,"children":[]},{"name":"Return the pre-allocated workspace for the next solve's H matrix.","total_count":1,"children":[]},{"name":"Sizing parameters for the arena.","total_count":1,"children":[]},{"name":"Sum of bytes pinned by the arena (constant for the arena's lifetime).","total_count":1,"children":[]}]},{"name":"device.py","total_count":14,"children":[{"name":"_cpu_allowed()","total_count":1,"children":[]},{"name":"Alias for :func:`require_cuda` — kept for readability at call sites.","total_count":1,"children":[]},{"name":"cuda_available()","total_count":1,"children":[]},{"name":"default_device()","total_count":1,"children":[]},{"name":"default_dtype()","total_count":1,"children":[]},{"name":"describe_device()","total_count":1,"children":[]},{"name":"Dtype for the inner least-squares solve — float64 per NUMERICAL_STABILITY §2.","total_count":1,"children":[]},{"name":"GPU-only device policy for DMRG-Transformer.  AGENTS.md and ARCHITECTURE.md ma","total_count":1,"children":[]},{"name":"Human-readable string describing the active device (for logs/reports).","total_count":1,"children":[]},{"name":"Project default compute dtype (float32 on GPU tensor cores).","total_count":1,"children":[]},{"name":"require_cuda()","total_count":1,"children":[]},{"name":"Return ``cuda:0`` or raise a descriptive ``RuntimeError``.      This is the pr","total_count":1,"children":[]},{"name":"Return whether a working CUDA device is visible to PyTorch.","total_count":1,"children":[]},{"name":"solver_dtype()","total_count":1,"children":[]}]},{"name":"interfaces.py","total_count":16,"children":[{"name":".compute_layer_target()","total_count":1,"children":[]},{"name":".contract_forward()","total_count":1,"children":[]},{"name":".get_core()","total_count":1,"children":[]},{"name":".orthogonalize_left()","total_count":1,"children":[]},{"name":".orthogonalize_right()","total_count":1,"children":[]},{"name":".solve_local_core()","total_count":1,"children":[]},{"name":".sweep()","total_count":1,"children":[]},{"name":".truncate_svd()","total_count":1,"children":[]},{"name":".update_core()","total_count":1,"children":[]},{"name":"Exact-solver replacement for SGD/Adam (ARCHITECTURE.md §4.3).","total_count":1,"children":[]},{"name":"Geometric encapsulation of a factorized weight space.      Mirrors ``ITensorTr","total_count":1,"children":[]},{"name":"IDMRGOptimizer","total_count":1,"children":[]},{"name":"ITargetPropagator","total_count":1,"children":[]},{"name":"ITensorTrain","total_count":1,"children":[]},{"name":"Replacement for the Backpropagation Chain Rule (ARCHITECTURE.md §4.2).","total_count":1,"children":[]},{"name":"Strict OOD interfaces (Protocols) mirroring ARCHITECTURE.md Rust traits.  Thes","total_count":1,"children":[]}]},{"name":"precision.py","total_count":9,"children":[{"name":"condition_number()","total_count":1,"children":[]},{"name":"Downcast back to float32 for Tensor-Core-bound contractions.","total_count":1,"children":[]},{"name":"Mixed-precision casting helpers (NUMERICAL_STABILITY.md §2).","total_count":1,"children":[]},{"name":"needs_f64_upcast()","total_count":1,"children":[]},{"name":"Return True if SVD/inverse should be done in float64 per NUMERICAL_STABILITY §2.","total_count":1,"children":[]},{"name":"Spectral condition number used to gate dynamic upcasting.","total_count":1,"children":[]},{"name":"to_f32()","total_count":1,"children":[]},{"name":"to_f64()","total_count":1,"children":[]},{"name":"Upcast to float64 for numerically sensitive ops (QR / ill-conditioned SVD).","total_count":1,"children":[]}]},{"name":"qr.py","total_count":5,"children":[{"name":"Compute Q, R with float64 internal precision; result returned in ``matrix.dtype`","total_count":1,"children":[]},{"name":"QR with mandatory float64 cast (NUMERICAL_STABILITY.md §2).  This module is th","total_count":1,"children":[]},{"name":"qr_f64()","total_count":1,"children":[]},{"name":"qr_f64_strict()","total_count":1,"children":[]},{"name":"Same as :func:`qr_f64` but returns float64 Q and R for orthogonality tests.","total_count":1,"children":[]}]},{"name":"svd.py","total_count":14,"children":[{"name":"_svd_scipy()","total_count":1,"children":[]},{"name":"_svd_torch()","total_count":1,"children":[]},{"name":"adaptive_rank()","total_count":1,"children":[]},{"name":"Choose the smallest rank ``r`` whose discarded tail mass is below     ``rel_thr","total_count":1,"children":[]},{"name":"discarded_energy()","total_count":1,"children":[]},{"name":"Eckart–Young–Mirsky truncation (TENSOR_TOPOLOGY.md §6, step 2).","total_count":1,"children":[]},{"name":"Raised only after Tier 4 (noise + retry) of the fallback hierarchy fails.","total_count":1,"children":[]},{"name":"Robust SVD with the four-tier fallback hierarchy (NUMERICAL_STABILITY.md §4).","total_count":1,"children":[]},{"name":"robust_svd()","total_count":1,"children":[]},{"name":"Single authoritative SVD call site. Implements the 4-tier fallback ladder.","total_count":1,"children":[]},{"name":"SVDDivergenceError","total_count":1,"children":[]},{"name":"SVDResult","total_count":1,"children":[]},{"name":"Theoretical Frobenius truncation error: sqrt(Σ_{i>r} σ_i²).","total_count":1,"children":[]},{"name":"truncate()","total_count":1,"children":[]}]}]},{"name":"nn","total_count":85,"children":[{"name":"__init__.py","total_count":1,"children":[{"name":"Neural network components backed by Tensor Trains.","total_count":1,"children":[]}]},{"name":"embeddings.py","total_count":6,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".forward()","total_count":1,"children":[]},{"name":"Add positional encoding to input.          Args:             x: [batch, seq_l","total_count":1,"children":[]},{"name":"Embedding utilities for the DMRG-Transformer.","total_count":1,"children":[]},{"name":"PositionalEncoding","total_count":1,"children":[]},{"name":"Sinusoidal positional encoding (fixed).      PE(pos, 2i) = sin(pos / 10000^(2i","total_count":1,"children":[]}]},{"name":"tt_block.py","total_count":18,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".__init__()","total_count":1,"children":[]},{"name":"._standardize()","total_count":1,"children":[]},{"name":"_AffineLN","total_count":1,"children":[]},{"name":"``TTBlock`` — Pre-LN Transformer encoder block with TT-factorized linears.  Co","total_count":1,"children":[]},{"name":"dmrg_step()","total_count":1,"children":[]},{"name":"Exact-solver update for one Pre-LN block (full Q/K/V/W_out + FFN).","total_count":1,"children":[]},{"name":"Forward returning every intermediate tensor needed by ``dmrg_step``.","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"forward_with_cache()","total_count":1,"children":[]},{"name":"LayerNorm with affine ``(γ, β)`` stored as **buffers** (not nn.Parameter).","total_count":1,"children":[]},{"name":"num_parameters()","total_count":1,"children":[]},{"name":"Per-feature OLS fit ``y ≈ γ·z + β``. Returns (mse_before, mse_after).","total_count":1,"children":[]},{"name":"Pre-LN Transformer encoder block (TT-MHA + TT-FFN with optional LN affine).","total_count":1,"children":[]},{"name":"Propagate a target for the block output back to the block input.          Uses","total_count":1,"children":[]},{"name":"pullback_target()","total_count":1,"children":[]},{"name":"TTBlock","total_count":1,"children":[]},{"name":"update_affine_lsq()","total_count":1,"children":[]}]},{"name":"tt_ffn.py","total_count":10,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"``TTFeedForward`` — position-wise feed-forward block with TT-factorized linears.","total_count":1,"children":[]},{"name":"dmrg_step()","total_count":1,"children":[]},{"name":"Exact-solver update: fc2 sweep → propagate back → fc1 sweep.          Args:","total_count":1,"children":[]},{"name":"Forward pass returning ``(y, z1_pre_gelu, h1_post_gelu)`` over flat tokens.","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"forward_with_cache()","total_count":1,"children":[]},{"name":"num_parameters()","total_count":1,"children":[]},{"name":"Position-wise feed-forward block with TT-factorized weight matrices.      Args","total_count":1,"children":[]},{"name":"TTFeedForward","total_count":1,"children":[]}]},{"name":"tt_linear.py","total_count":13,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"._commit_tt()","total_count":1,"children":[]},{"name":"._view_tt()","total_count":1,"children":[]},{"name":".to_dense_weight()","total_count":1,"children":[]},{"name":"``TTLinear`` — drop-in replacement for ``nn.Linear`` using a TensorTrain.  Per","total_count":1,"children":[]},{"name":"dmrg_step()","total_count":1,"children":[]},{"name":"Exact-solver weight update. Returns the sweep report (initial/final MSE).","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"Linear layer whose weight matrix is stored as a Tensor-Train.      The module","total_count":1,"children":[]},{"name":"num_parameters()","total_count":1,"children":[]},{"name":"Parameter count across all TT cores (plus bias if present).","total_count":1,"children":[]},{"name":"Return the equivalent dense weight matrix (expensive — diagnostic use).","total_count":1,"children":[]},{"name":"TTLinear","total_count":1,"children":[]}]},{"name":"tt_linear_attention.py","total_count":12,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"_project()","total_count":1,"children":[]},{"name":"``TTLinearAttention`` — multi-head linear attention with TT-factorized projectio","total_count":1,"children":[]},{"name":"Apply a TTLinear over ``[..., embed_dim]`` inputs.","total_count":1,"children":[]},{"name":"dmrg_step_projections()","total_count":1,"children":[]},{"name":"elu_plus_one()","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"Linear-attention forward pass.          Shapes:             query, key, value","total_count":1,"children":[]},{"name":"Multi-head linear attention with TT-factorized Q/K/V/W_out projections.      A","total_count":1,"children":[]},{"name":"Per-projection exact-solver updates given layer-local targets.          Identi","total_count":1,"children":[]},{"name":"Positive feature map ``φ(x) = elu(x) + 1``. Element-wise, range (0, ∞).","total_count":1,"children":[]},{"name":"TTLinearAttention","total_count":1,"children":[]}]},{"name":"tt_linear_attention_block.py","total_count":15,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"._compute_attn_internals()","total_count":1,"children":[]},{"name":"._solve_v_target()","total_count":1,"children":[]},{"name":"``TTLinearAttentionBlock`` — Pre-LN block with TT linear attention.  Compositi","total_count":1,"children":[]},{"name":"dmrg_step()","total_count":1,"children":[]},{"name":"Exact-solver update for one Pre-LN linear-attention block.          Sequence (","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"forward_with_cache()","total_count":1,"children":[]},{"name":"num_parameters()","total_count":1,"children":[]},{"name":"Per-(B,H) ridge LSQ for V given fixed w (i.e. fixed phiQ, phiK).          ``w`","total_count":1,"children":[]},{"name":"Pre-LN Transformer block with TT linear attention + TT-FFN.","total_count":1,"children":[]},{"name":"Propagate a target for the block output back to the block input.          Uses","total_count":1,"children":[]},{"name":"pullback_target()","total_count":1,"children":[]},{"name":"Return per-head Q, K, V, phiQ, phiK, w (= phiQ·phiKᵀ), denom, context.","total_count":1,"children":[]},{"name":"TTLinearAttentionBlock","total_count":1,"children":[]}]},{"name":"tt_mha.py","total_count":10,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"_project()","total_count":1,"children":[]},{"name":"``TTMultiHeadAttention`` — MHA with TT-factorized projection matrices.  Each o","total_count":1,"children":[]},{"name":"Apply a TTLinear over ``[..., embed_dim]`` inputs.","total_count":1,"children":[]},{"name":"dmrg_step_projections()","total_count":1,"children":[]},{"name":"forward()","total_count":1,"children":[]},{"name":"Multi-Head Attention with TT-factorized projection weights.      Args:","total_count":1,"children":[]},{"name":"Run per-projection exact-solver updates given layer-local targets.          ``","total_count":1,"children":[]},{"name":"Scaled dot-product attention.          Shapes:             query, key, value:","total_count":1,"children":[]},{"name":"TTMultiHeadAttention","total_count":1,"children":[]}]}]},{"name":"optim","total_count":33,"children":[{"name":"__init__.py","total_count":1,"children":[{"name":"Exact-solver DMRG optimization engine.","total_count":1,"children":[]}]},{"name":"local_solver.py","total_count":21,"children":[{"name":"_apply_J()","total_count":1,"children":[]},{"name":"_apply_JT()","total_count":1,"children":[]},{"name":"_build_block_normal_equations()","total_count":1,"children":[]},{"name":"_build_jacobian()","total_count":1,"children":[]},{"name":"_build_normal_equations()","total_count":1,"children":[]},{"name":"_huber_clamp()","total_count":1,"children":[]},{"name":"_should_use_matrix_free()","total_count":1,"children":[]},{"name":"_solve_core_cg()","total_count":1,"children":[]},{"name":"Apply the adjoint Jacobian J^T to an output-shaped tensor ``y``.      Args:","total_count":1,"children":[]},{"name":"Apply the Jacobian J to a core-shaped tensor ``v``.      Args:         v: sha","total_count":1,"children":[]},{"name":"Block Conjugate Gradient on ``(J^T J + lam I) v = J^T Y``.      All ``j_k`` ri","total_count":1,"children":[]},{"name":"Block-diagonal form of the normal equations (memory-efficient solver path).","total_count":1,"children":[]},{"name":"Build ``(JᵀJ, Jᵀy)`` directly via environment contractions.      This replaces","total_count":1,"children":[]},{"name":"Build the Jacobian ``J`` such that ``Y_pred.flatten(start_dim=1) = J @ vec(G_k)`","total_count":1,"children":[]},{"name":"Exact least-squares + SVD-truncated update for core ``k``.      Args:","total_count":1,"children":[]},{"name":"Exact local least-squares solver for a single TT-core (AGENTS.md Phase III).","total_count":1,"children":[]},{"name":"LocalSolveResult","total_count":1,"children":[]},{"name":"NUMERICAL_STABILITY §5: clamp target entries to ±5σ from per-batch mean.","total_count":1,"children":[]},{"name":"Output of a single local-core update.","total_count":1,"children":[]},{"name":"Pick between dense and matrix-free based on H's memory footprint.      The den","total_count":1,"children":[]},{"name":"solve_local_core()","total_count":1,"children":[]}]},{"name":"sweep.py","total_count":11,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".solve_local_core()","total_count":1,"children":[]},{"name":".sweep()","total_count":1,"children":[]},{"name":".truncate_svd()","total_count":1,"children":[]},{"name":"Bookkeeping for a full left-to-right + right-to-left sweep.","total_count":1,"children":[]},{"name":"DMRG optimizer implementing ``IDMRGOptimizer`` (ARCHITECTURE.md §4.3).  The :c","total_count":1,"children":[]},{"name":"DMRGOptimizer","total_count":1,"children":[]},{"name":"Exact-solver replacement for SGD/Adam.      Args:         max_rank: TT-rank b","total_count":1,"children":[]},{"name":"Expose Eckart–Young–Mirsky truncation as a standalone primitive.","total_count":1,"children":[]},{"name":"Full bidirectional sweep: L→R then R→L.          Ensures the TT is properly ga","total_count":1,"children":[]},{"name":"SweepReport","total_count":1,"children":[]}]}]},{"name":"propagation","total_count":21,"children":[{"name":"__init__.py","total_count":1,"children":[{"name":"Target-propagation replacement for backprop.","total_count":1,"children":[]}]},{"name":"target_propagator.py","total_count":20,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".compute_layer_target()","total_count":1,"children":[]},{"name":".project_through_attention_v()","total_count":1,"children":[]},{"name":".project_through_layernorm()","total_count":1,"children":[]},{"name":".project_through_linear()","total_count":1,"children":[]},{"name":".project_through_qk_bilinear()","total_count":1,"children":[]},{"name":".project_through_residual()","total_count":1,"children":[]},{"name":".softmax_target_to_scores()","total_count":1,"children":[]},{"name":".solve_attention_pattern_target()","total_count":1,"children":[]},{"name":"Compute a local target for a layer given a global target and its forward output.","total_count":1,"children":[]},{"name":"Decoupled bilinear pull-back of a score target ``S = Q K^T``.          Given a","total_count":1,"children":[]},{"name":"Layer-wise target propagator (ARCHITECTURE.md §4.2).  Replaces the Backpropaga","total_count":1,"children":[]},{"name":"Map a target attention pattern ``A_target`` to a score target ``S``.","total_count":1,"children":[]},{"name":"Pull a context target back to a per-head V target through ``A @ V``.","total_count":1,"children":[]},{"name":"Pull a downstream target back through a linear layer ``y = x @ W``.          S","total_count":1,"children":[]},{"name":"Pull a target back through ``LayerNorm`` using current-row statistics.","total_count":1,"children":[]},{"name":"Pull a target back through a residual connection ``y = x + f(x)``.          Gi","total_count":1,"children":[]},{"name":"Recover a target attention pattern ``A_target`` from a context target.","total_count":1,"children":[]},{"name":"Solve ``current_layer_out ≈ global_target`` as a least-squares residual.","total_count":1,"children":[]},{"name":"TargetPropagator","total_count":1,"children":[]}]}]},{"name":"tt","total_count":58,"children":[{"name":"__init__.py","total_count":1,"children":[{"name":"Tensor Train geometry and gauge management.","total_count":1,"children":[]}]},{"name":"environments.py","total_count":16,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":".get_left()","total_count":1,"children":[]},{"name":".get_right()","total_count":1,"children":[]},{"name":".invalidate_left()","total_count":1,"children":[]},{"name":".invalidate_right()","total_count":1,"children":[]},{"name":"Contract ``X`` through cores ``0..k_stop-1``.      Returns a tensor of shape","total_count":1,"children":[]},{"name":"Contract cores ``k_start..d-1`` without X.      Returns a tensor of shape ``[r","total_count":1,"children":[]},{"name":"Environment block computations for the DMRG sweep.  Given a TT factorization o","total_count":1,"children":[]},{"name":"EnvironmentCache","total_count":1,"children":[]},{"name":"Get or compute the left environment through cores 0..k-1.","total_count":1,"children":[]},{"name":"Get or compute the right-pure product of cores k..d-1.","total_count":1,"children":[]},{"name":"Incremental cache for DMRG environment blocks (REVIEW.md Issue A).","total_count":1,"children":[]},{"name":"Invalidate left cache from core k onwards.","total_count":1,"children":[]},{"name":"Invalidate right cache from 0 up to core k.","total_count":1,"children":[]},{"name":"left_state_through()","total_count":1,"children":[]},{"name":"right_pure_product()","total_count":1,"children":[]}]},{"name":"gauge.py","total_count":13,"children":[{"name":"_left_orthogonalize_core()","total_count":1,"children":[]},{"name":"_right_orthogonalize_core()","total_count":1,"children":[]},{"name":"Gauge management: left/right orthogonalization sweeps (AGENTS.md Phase II).  E","total_count":1,"children":[]},{"name":"Left-orthogonalize core ``k`` and push the remnant into core ``k+1``.      Req","total_count":1,"children":[]},{"name":"Left-orthogonalize cores ``0..target-1`` so the orthogonality center is at ``tar","total_count":1,"children":[]},{"name":"merged_left_block()","total_count":1,"children":[]},{"name":"merged_right_block()","total_count":1,"children":[]},{"name":"orthogonalize_left_to()","total_count":1,"children":[]},{"name":"orthogonalize_right_to()","total_count":1,"children":[]},{"name":"Return the merged left environment matrix of shape ``(prod(p_0..p_{k-1}), r_{k-1","total_count":1,"children":[]},{"name":"Return the merged right environment matrix of shape ``(r_k, prod(p_{k+1}..p_{d-1","total_count":1,"children":[]},{"name":"Right-orthogonalize core ``k`` and push the remnant into core ``k-1``.      Us","total_count":1,"children":[]},{"name":"Right-orthogonalize cores ``target+1..d-1`` so the gauge center is at ``target``","total_count":1,"children":[]}]},{"name":"tensor_train.py","total_count":28,"children":[{"name":".__init__()","total_count":1,"children":[]},{"name":"._interleaved_to_matrix()","total_count":1,"children":[]},{"name":"._set_orth_center()","total_count":1,"children":[]},{"name":".contract_forward()","total_count":1,"children":[]},{"name":".get_core()","total_count":1,"children":[]},{"name":".orthogonalize_left()","total_count":1,"children":[]},{"name":".orthogonalize_right()","total_count":1,"children":[]},{"name":".to_dense()","total_count":1,"children":[]},{"name":".total_frobenius_bound()","total_count":1,"children":[]},{"name":".update_core()","total_count":1,"children":[]},{"name":"A factorized weight space ``W ∈ R^{N×M}`` stored as TT-cores.      Args:","total_count":1,"children":[]},{"name":"Bond dimensions ``[r_0, r_1, ..., r_d]`` (with ``r_0 = r_d = 1``).","total_count":1,"children":[]},{"name":"Classical TT-SVD decomposition of a dense matrix.          Implements the algo","total_count":1,"children":[]},{"name":"Convert tensor with axes ``(p_1, ..., p_d)`` (each p_k = i_k*j_k) to ``[N,M]``.","total_count":1,"children":[]},{"name":"cores()","total_count":1,"children":[]},{"name":"Forward inference: ``y = X · W`` where W is the TT.          Args:","total_count":1,"children":[]},{"name":"from_dense()","total_count":1,"children":[]},{"name":"in_features()","total_count":1,"children":[]},{"name":"num_cores()","total_count":1,"children":[]},{"name":"orthogonality_center()","total_count":1,"children":[]},{"name":"out_features()","total_count":1,"children":[]},{"name":"Per-step record of the TT-SVD decomposition (for Gate 1 verification).","total_count":1,"children":[]},{"name":"ranks()","total_count":1,"children":[]},{"name":"Reconstruct the full ``[N, M]`` matrix by sequential core contraction.","total_count":1,"children":[]},{"name":"Sqrt of the sum-of-squares of all discarded singular values across all cuts.","total_count":1,"children":[]},{"name":"Tensor Train (TT) factorized weight space.  Implements ``ITensorTrain`` from A","total_count":1,"children":[]},{"name":"TensorTrain","total_count":1,"children":[]},{"name":"TruncationReport","total_count":1,"children":[]}]}]}]}]},{"name":"tests","total_count":204,"children":[{"name":"conftest.py","total_count":4,"children":[{"name":"device()","total_count":1,"children":[]},{"name":"Global test fixtures.  AGENTS.md + NUMERICAL_STABILITY.md mandate GPU/CUDA exe","total_count":1,"children":[]},{"name":"pytest_collection_modifyitems()","total_count":1,"children":[]},{"name":"pytest_configure()","total_count":1,"children":[]}]},{"name":"test_adaptive_rank.py","total_count":5,"children":[{"name":"Adaptive rank scheduler tests (plan §C5).","total_count":1,"children":[]},{"name":"test_adaptive_rank_keeps_dominant_modes()","total_count":1,"children":[]},{"name":"test_adaptive_rank_respects_max()","total_count":1,"children":[]},{"name":"test_adaptive_rank_respects_min()","total_count":1,"children":[]},{"name":"test_adaptive_rank_returns_full_when_threshold_strict()","total_count":1,"children":[]}]},{"name":"test_adaptive_rank_wiring.py","total_count":8,"children":[{"name":"_init_tt()","total_count":1,"children":[]},{"name":"_make_low_rank_target()","total_count":1,"children":[]},{"name":"A strict (≈0) threshold must keep every mode up to max_rank — same MSE     as t","total_count":1,"children":[]},{"name":"Adaptive-rank wiring through ``DMRGOptimizer.sweep`` (plan §C5 closure).  Vali","total_count":1,"children":[]},{"name":"Random small-init TT in the requested factorization.","total_count":1,"children":[]},{"name":"test_adaptive_threshold_matches_fixed_when_strict()","total_count":1,"children":[]},{"name":"test_adaptive_threshold_prunes_on_easy_target()","total_count":1,"children":[]},{"name":"With a loose threshold the rule must cap the achieved rank at well     below ``","total_count":1,"children":[]}]},{"name":"test_benchmark_iso_rank.py","total_count":6,"children":[{"name":"Gate-3 production form: when the target literally lives on a TT     manifold of","total_count":1,"children":[]},{"name":"Smoke tests for Phase D iso-rank benchmark methods.  Validates: - ``run_adam_","total_count":1,"children":[]},{"name":"SVD-truncating the dense lstsq solution to rank-r yields MSE >=     dense-exact","total_count":1,"children":[]},{"name":"test_run_adam_low_rank_produces_finite_mse()","total_count":1,"children":[]},{"name":"test_run_project_to_rank_dominated_by_dense_exact()","total_count":1,"children":[]},{"name":"test_target_rank_makes_dmrg_approach_noise_floor()","total_count":1,"children":[]}]},{"name":"test_benchmark_smoke.py","total_count":3,"children":[{"name":"Shrunken benchmark smoke test (BENCHMARK.md structure at smaller scale).","total_count":1,"children":[]},{"name":"Smoke-scale benchmark: three-way runoff produces finite, ordered results.","total_count":1,"children":[]},{"name":"test_benchmark_smoke_small()","total_count":1,"children":[]}]},{"name":"test_constraints.py","total_count":9,"children":[{"name":"_attr_chain()","total_count":1,"children":[]},{"name":"_iter_sources()","total_count":1,"children":[]},{"name":"_parse()","total_count":1,"children":[]},{"name":"AGENTS.md constraint enforcement tests.  Asserts, via static AST scanning of t","total_count":1,"children":[]},{"name":"Dotted name like ``torch.linalg.svd`` if ``node`` is an Attribute chain.","total_count":1,"children":[]},{"name":"test_no_backward_calls_anywhere()","total_count":1,"children":[]},{"name":"test_no_iterative_optimizer_references()","total_count":1,"children":[]},{"name":"test_qr_has_single_authorized_call_site()","total_count":1,"children":[]},{"name":"test_svd_has_single_authorized_call_site()","total_count":1,"children":[]}]},{"name":"test_gate1_reconstruction.py","total_count":6,"children":[{"name":"Boundary ranks r_0 = r_d = 1 must be enforced.","total_count":1,"children":[]},{"name":"Decomposing at full TT-rank (no truncation) must reconstruct to machine precisio","total_count":1,"children":[]},{"name":"test_gate1_full_rank_round_trip_is_exact()","total_count":1,"children":[]},{"name":"test_gate1_invariants_enforced()","total_count":1,"children":[]},{"name":"test_gate1_tt_svd_reconstruction_matches_theoretical_bound()","total_count":1,"children":[]},{"name":"Validation Gate 1 (AGENTS.md §3, Phase I).  Decompose a 1024×1024 random matri","total_count":1,"children":[]}]},{"name":"test_gate2_orthogonality.py","total_count":7,"children":[{"name":"_make_random_tt()","total_count":1,"children":[]},{"name":"Construct a random TT directly in the requested dtype (bypasses SVD/QR cascade).","total_count":1,"children":[]},{"name":"Orthogonalization must be gauge-preserving: W = L·G·... must be unchanged.","total_count":1,"children":[]},{"name":"test_gate2_left_ortho_preserves_dense_matrix()","total_count":1,"children":[]},{"name":"test_gate2_left_orthogonalization_yields_identity()","total_count":1,"children":[]},{"name":"test_gate2_right_orthogonalization_yields_identity()","total_count":1,"children":[]},{"name":"Validation Gate 2 (AGENTS.md §3, Phase II).  After a left-orthogonalization sw","total_count":1,"children":[]}]},{"name":"test_gate3_exact_parity.py","total_count":8,"children":[{"name":"_build_synthetic()","total_count":1,"children":[]},{"name":"Informational: DMRG per-sweep wall time scales well below N^3.      Not a stri","total_count":1,"children":[]},{"name":"Noiseless low-TT-rank synthetic data. The rank-``rank`` optimum is exact.","total_count":1,"children":[]},{"name":"Proof of monotonic convergence (SOLVER_MATH.md §V).","total_count":1,"children":[]},{"name":"test_gate3_dmrg_matches_dense_lstsq_mse()","total_count":1,"children":[]},{"name":"test_gate3_single_sweep_reduces_mse_monotonically()","total_count":1,"children":[]},{"name":"test_gate3_wall_time_scales_sublinearly_in_n()","total_count":1,"children":[]},{"name":"Validation Gate 3 (AGENTS.md §3, Phase III).  Pass condition: DMRG sweep MSE m","total_count":1,"children":[]}]},{"name":"test_jacobian_sanity.py","total_count":2,"children":[{"name":"test_jacobian_reconstructs_forward()","total_count":1,"children":[]},{"name":"Unit sanity check: J @ vec(G_k) must equal the TT forward output.","total_count":1,"children":[]}]},{"name":"test_matrix_free_regression.py","total_count":3,"children":[{"name":"A single sweep at N=512, batch=1024, rank=16 must use < 1 GiB peak GPU.","total_count":1,"children":[]},{"name":"Regression test: matrix-free local solver must fit BENCHMARK.md headline scale.","total_count":1,"children":[]},{"name":"test_dmrg_sweep_at_512x512_under_memory_budget()","total_count":1,"children":[]}]},{"name":"test_matrix_free_solver.py","total_count":12,"children":[{"name":"_build_views()","total_count":1,"children":[]},{"name":"``<J v, y> == <v, J^T y>`` for random v, y — the fundamental adjoint identity.","total_count":1,"children":[]},{"name":"At N=256, rank=24 the matrix-free path must stay under 256 MiB peak GPU.","total_count":1,"children":[]},{"name":"CG must recover the dense-solve core to tight tolerance on small problems.","total_count":1,"children":[]},{"name":"End-to-end parity: dense and matrix-free paths must produce the same     post-t","total_count":1,"children":[]},{"name":"Matrix-free local solver parity and memory regression tests.  Guards REVIEW.md","total_count":1,"children":[]},{"name":"test_cg_matches_dense_solve_on_small_problem()","total_count":1,"children":[]},{"name":"test_jacobian_adjoint_symmetry()","total_count":1,"children":[]},{"name":"test_matrix_free_memory_budget_at_moderate_scale()","total_count":1,"children":[]},{"name":"test_should_use_matrix_free_threshold()","total_count":1,"children":[]},{"name":"test_solve_local_core_dense_and_cg_paths_agree_on_residual()","total_count":1,"children":[]},{"name":"Threshold picks dense for small P_block and matrix-free at scale.","total_count":1,"children":[]}]},{"name":"test_memory_arena.py","total_count":7,"children":[{"name":"_spec()","total_count":1,"children":[]},{"name":"MemoryArena prototype tests (MEMORY_ARENA.md §2-§4).  These verify the *contra","total_count":1,"children":[]},{"name":"test_arena_buffers_distinct()","total_count":1,"children":[]},{"name":"test_arena_swap_flips_active()","total_count":1,"children":[]},{"name":"test_arena_total_bytes_constant()","total_count":1,"children":[]},{"name":"test_arena_zero_allocations_across_cycles()","total_count":1,"children":[]},{"name":"The \"zero-allocation prime directive\" (MEMORY_ARENA.md §2).      Run 1000 take","total_count":1,"children":[]}]},{"name":"test_mha_consistency.py","total_count":6,"children":[{"name":"Each per-projection DMRG step must weakly reduce its MSE.","total_count":1,"children":[]},{"name":"Integration tests for TTMultiHeadAttention.","total_count":1,"children":[]},{"name":"test_ttmha_dmrg_step_can_skip_untouched_projections()","total_count":1,"children":[]},{"name":"test_ttmha_dmrg_step_reduces_projection_mse()","total_count":1,"children":[]},{"name":"test_ttmha_self_attention_is_finite()","total_count":1,"children":[]},{"name":"test_ttmha_shape_parity()","total_count":1,"children":[]}]},{"name":"test_numerical_stability.py","total_count":13,"children":[{"name":"If NaN persists past 6 escalations the solver must raise.","total_count":1,"children":[]},{"name":"Numerical-stability edge case tests (NUMERICAL_STABILITY.md §3 + §4).  Covers","total_count":1,"children":[]},{"name":"SVDDivergenceError MUST be raised after all 4 tiers fail.","total_count":1,"children":[]},{"name":"test_svd_divergence_error_when_all_tiers_fail()","total_count":1,"children":[]},{"name":"test_svd_tier2_reachable_when_torch_svd_fails()","total_count":1,"children":[]},{"name":"test_svd_tier3_reachable_when_gesdd_fails()","total_count":1,"children":[]},{"name":"test_svd_tier4_noise_retry()","total_count":1,"children":[]},{"name":"test_tikhonov_lambda_escalates_on_nan_then_recovers()","total_count":1,"children":[]},{"name":"test_tikhonov_raises_after_6_escalations()","total_count":1,"children":[]},{"name":"Tier-2 SciPy gesdd MUST produce a valid SVD when Tier 1 raises.","total_count":1,"children":[]},{"name":"Tier-3 SciPy gesvd MUST be reached when both torch SVD and gesdd fail.","total_count":1,"children":[]},{"name":"Tier-4 (add ε noise, retry torch SVD) MUST be the final fallback.","total_count":1,"children":[]},{"name":"When the local solve yields NaN, λ MUST escalate by 10× up to 6 times.","total_count":1,"children":[]}]},{"name":"test_real_world_classifier.py","total_count":3,"children":[{"name":"DMRG + target propagation on sklearn digits must beat 80% test accuracy.","total_count":1,"children":[]},{"name":"Regression test for the end-to-end real-world classifier (DMRG-trained TT-MLP).","total_count":1,"children":[]},{"name":"test_real_world_classifier_learns_above_chance()","total_count":1,"children":[]}]},{"name":"test_real_world_tt_block_classifier.py","total_count":2,"children":[{"name":"Regression guard for the stacked-TTBlock real-task classifier.  Runs a tiny ve","total_count":1,"children":[]},{"name":"test_tt_block_classifier_learns_above_random()","total_count":1,"children":[]}]},{"name":"test_real_world_tt_block_depth2_blend.py","total_count":2,"children":[{"name":"test_aggregate_attn_reports_tracks_rejects_and_maxima()","total_count":1,"children":[]},{"name":"Unit tests for the depth-2 TTBlock blend harness helpers.","total_count":1,"children":[]}]},{"name":"test_real_world_tt_block_script_output.py","total_count":2,"children":[{"name":"Regression guard for the real-world TTBlock benchmark script's console output.","total_count":1,"children":[]},{"name":"test_console_safe_rewrites_non_cp1252_glyphs()","total_count":1,"children":[]}]},{"name":"test_svd_fallback.py","total_count":7,"children":[{"name":"Non-2D inputs raise ValueError; 2D inputs with finite entries never raise.","total_count":1,"children":[]},{"name":"Rank-deficient matrix must still decompose via one of the four tiers.","total_count":1,"children":[]},{"name":"SVD fallback hierarchy tests (NUMERICAL_STABILITY.md §4).","total_count":1,"children":[]},{"name":"test_svd_handles_rank_deficient_matrix()","total_count":1,"children":[]},{"name":"test_svd_raises_only_on_non_2d()","total_count":1,"children":[]},{"name":"test_svd_tier1_on_well_conditioned_matrix()","total_count":1,"children":[]},{"name":"test_svd_truncation_respects_max_rank()","total_count":1,"children":[]}]},{"name":"test_target_propagation_cascade.py","total_count":4,"children":[{"name":"_fresh_tt()","total_count":1,"children":[]},{"name":"End-to-end TargetPropagator cascade through stacked TT layers (plan §C1).  Thi","total_count":1,"children":[]},{"name":"Stack 3 TT layers, propagate a global target backward, sweep each layer,     an","total_count":1,"children":[]},{"name":"test_target_propagator_cascade_reduces_global_mse()","total_count":1,"children":[]}]},{"name":"test_target_propagator_extensions.py","total_count":28,"children":[{"name":"``softmax(softmax_target_to_scores(A)) == A`` (gauge-invariance check).","total_count":1,"children":[]},{"name":"End-to-end: starting from Q,K,V at the truth, the propagator pipeline     must","total_count":1,"children":[]},{"name":"For ``y = x + f(x)``, given ``y_target = x + f_target``, the     propagator mus","total_count":1,"children":[]},{"name":"Given A and a context produced as ``A @ V_true``, the V pull-back must     reco","total_count":1,"children":[]},{"name":"If ``C = A V`` and V is square + invertible, ``A_target ≈ A`` after     simplex","total_count":1,"children":[]},{"name":"LN with non-trivial γ, β: ``y = γ * normalize(x) + β`` must round-trip.","total_count":1,"children":[]},{"name":"LN with γ=1, β=0: pulling back ``y = LN(x)`` must recover ``x`` (up to     the","total_count":1,"children":[]},{"name":"Overdetermined regime (L_k >= d_h): the system Q* K^T = S has a unique     solu","total_count":1,"children":[]},{"name":"REVIEW Issue E regression: at L=512, d_h=8 the Woodbury path must     use mater","total_count":1,"children":[]},{"name":"REVIEW.md Issue E: the Woodbury push-through path (d_h < L_k) must     produce","total_count":1,"children":[]},{"name":"Symmetric overdetermined K test (L_q >= d_h).","total_count":1,"children":[]},{"name":"test_full_attention_pull_back_pipeline_reproduces_context()","total_count":1,"children":[]},{"name":"test_project_through_attention_v_recovers_v_when_context_is_av()","total_count":1,"children":[]},{"name":"test_project_through_attention_v_shape_validation()","total_count":1,"children":[]},{"name":"test_project_through_layernorm_round_trip_identity_affine()","total_count":1,"children":[]},{"name":"test_project_through_layernorm_shape_mismatch_raises()","total_count":1,"children":[]},{"name":"test_project_through_layernorm_with_affine_params()","total_count":1,"children":[]},{"name":"test_project_through_qk_bilinear_recovers_k_overdetermined()","total_count":1,"children":[]},{"name":"test_project_through_qk_bilinear_recovers_q_overdetermined()","total_count":1,"children":[]},{"name":"test_project_through_qk_bilinear_satisfies_equation_underdetermined()","total_count":1,"children":[]},{"name":"test_project_through_residual_recovers_branch_target()","total_count":1,"children":[]},{"name":"test_project_through_residual_shape_mismatch_raises()","total_count":1,"children":[]},{"name":"test_softmax_target_to_scores_round_trip()","total_count":1,"children":[]},{"name":"test_solve_attention_pattern_target_recovers_a_when_v_is_full_rank()","total_count":1,"children":[]},{"name":"test_solve_attention_pattern_target_scales_to_long_sequences()","total_count":1,"children":[]},{"name":"test_solve_attention_pattern_target_woodbury_matches_dense()","total_count":1,"children":[]},{"name":"Tests for ``TargetPropagator.project_through_residual / _layernorm``.  Verifie","total_count":1,"children":[]},{"name":"Underdetermined regime (L_k < d_h): Q* won't equal Q_true (many valid     Q* ex","total_count":1,"children":[]}]},{"name":"test_tt_block.py","total_count":5,"children":[{"name":"_make_block()","total_count":1,"children":[]},{"name":"Single block, rank-feasible target: one DMRG step must reduce MSE.","total_count":1,"children":[]},{"name":"test_ttblock_dmrg_step_reduces_global_mse()","total_count":1,"children":[]},{"name":"test_ttblock_forward_shape_and_finite()","total_count":1,"children":[]},{"name":"Tests for ``TTBlock`` (Pre-LN Transformer encoder block).","total_count":1,"children":[]}]},{"name":"test_tt_block_stacked_end_to_end.py","total_count":6,"children":[{"name":"_forward_stack()","total_count":1,"children":[]},{"name":"_make_block()","total_count":1,"children":[]},{"name":"_sweep_stack()","total_count":1,"children":[]},{"name":"Stacked TTBlock end-to-end DMRG sweep test (plan §C4).  Verifies that two stac","total_count":1,"children":[]},{"name":"test_depth4_stack_prefers_lower_target_blend()","total_count":1,"children":[]},{"name":"test_stacked_ttblocks_reduce_global_mse()","total_count":1,"children":[]}]},{"name":"test_tt_ffn.py","total_count":8,"children":[{"name":"3 outer rounds of DMRG against a rank-feasible target must reduce MSE.","total_count":1,"children":[]},{"name":"[batch, seq, embed] inputs must be accepted (Transformer use-case).","total_count":1,"children":[]},{"name":"_make_ffn()","total_count":1,"children":[]},{"name":"test_ttffn_dmrg_step_reduces_global_mse()","total_count":1,"children":[]},{"name":"test_ttffn_dmrg_step_returns_per_sublayer_reports()","total_count":1,"children":[]},{"name":"test_ttffn_forward_handles_3d_input()","total_count":1,"children":[]},{"name":"test_ttffn_forward_shape()","total_count":1,"children":[]},{"name":"Tests for ``TTFeedForward`` — DMRG sweeps must reduce a rank-feasible target MSE","total_count":1,"children":[]}]},{"name":"test_tt_forward.py","total_count":4,"children":[{"name":"Forward through the TT must approximate X @ W_original up to truncation error.","total_count":1,"children":[]},{"name":"Forward-pass consistency: TT.contract_forward must match dense X @ W.","total_count":1,"children":[]},{"name":"test_forward_matches_dense()","total_count":1,"children":[]},{"name":"test_forward_matches_original_dense()","total_count":1,"children":[]}]},{"name":"test_tt_linear_attention_block_dmrg.py","total_count":6,"children":[{"name":"_build_block()","total_count":1,"children":[]},{"name":"device()","total_count":1,"children":[]},{"name":"Phase 1.3 — TTLinearAttentionBlock.dmrg_step convergence tests.  Two complemen","total_count":1,"children":[]},{"name":"test_dmrg_step_descends_global_mse()","total_count":1,"children":[]},{"name":"test_v_update_accepts_when_only_v_differs()","total_count":1,"children":[]},{"name":"When the teacher only differs in V, V update must fire and accept.","total_count":1,"children":[]}]},{"name":"test_tt_linear_attention_forward.py","total_count":7,"children":[{"name":"_reference_linear_attn()","total_count":1,"children":[]},{"name":"device()","total_count":1,"children":[]},{"name":"Forward-parity tests for TTLinearAttention.  We verify two properties: 1. The","total_count":1,"children":[]},{"name":"Linear attention is permutation-equivariant on the key/value axis modulo     th","total_count":1,"children":[]},{"name":"Per-token reference: out_q = (Σ_k φ(Q_q)·φ(K_k) V_k) / (Σ_k φ(Q_q)·φ(K_k)).","total_count":1,"children":[]},{"name":"test_forward_invariant_under_permutation_in_kv_axis()","total_count":1,"children":[]},{"name":"test_forward_matches_dense_reference()","total_count":1,"children":[]}]},{"name":"test_tt_linear_dropin.py","total_count":8,"children":[{"name":"A single DMRG step must (weakly) reduce the training MSE (SOLVER_MATH §V).","total_count":1,"children":[]},{"name":"Integration tests for TTLinear (drop-in Linear replacement).","total_count":1,"children":[]},{"name":"Smoke test: compose TTLinear with standard nn modules.","total_count":1,"children":[]},{"name":"test_ttlinear_can_coexist_with_nn_linear_pipeline()","total_count":1,"children":[]},{"name":"test_ttlinear_dmrg_step_reduces_mse()","total_count":1,"children":[]},{"name":"test_ttlinear_forward_deterministic()","total_count":1,"children":[]},{"name":"test_ttlinear_parameter_count_matches_tt_formula()","total_count":1,"children":[]},{"name":"test_ttlinear_shape_parity_with_nn_linear()","total_count":1,"children":[]}]},{"name":"test_ttblock_ln_affine.py","total_count":13,"children":[{"name":"`enable_ln_affine=False` (default) must be forward-equivalent with the     lega","total_count":1,"children":[]},{"name":"AGENTS Constraint 1: γ, β must be **buffers** (no autograd).","total_count":1,"children":[]},{"name":"At init γ=1, β=0 — must be bit-exact with elementwise_affine=False LN.","total_count":1,"children":[]},{"name":"Benchmark-style construction must place LN buffers on the project device     ev","total_count":1,"children":[]},{"name":"If y_target = γ*·z + β* exactly, the OLS update must recover (γ*, β*).","total_count":1,"children":[]},{"name":"LN affine (γ, β) OLS update tests for ``TTBlock`` (compliance closure).","total_count":1,"children":[]},{"name":"test_affine_ln_init_is_identity_with_frozen_layernorm()","total_count":1,"children":[]},{"name":"test_affine_ln_ols_recovers_known_target()","total_count":1,"children":[]},{"name":"test_ttblock_enable_ln_affine_off_is_unchanged_at_init()","total_count":1,"children":[]},{"name":"test_ttblock_ln_affine_buffers_are_not_parameters()","total_count":1,"children":[]},{"name":"test_ttblock_ln_buffers_pin_to_project_device_without_default_device()","total_count":1,"children":[]},{"name":"test_ttblock_with_ln_affine_does_not_increase_mse()","total_count":1,"children":[]},{"name":"Trust-region accept/revert must guarantee global MSE never increases     when L","total_count":1,"children":[]}]}]}]};
+
+    function transformData(jsonData) {
+        // Helper function to recursively build the children structure
+        function processNode(node, parentL1StageName) {
+            let displayName = node.name;
+            // Append total_count if it exists and is not already in the name
+            if (node.total_count !== undefined) {
+                if (!/\(Total Count: \d+\)$/.test(displayName)) {
+                    displayName += ` (Total Count: ${node.total_count})`;
+                }
+            }
+
+            const newNode = { name: displayName };
+
+            if (parentL1StageName === "Root") {
+                 newNode.originalStageName = node.name;
+            } else {
+                newNode.originalStageName = parentL1StageName;
+            }
+
+            if (node.children && node.children.length > 0) {
+                const stageNameToPass = (parentL1StageName === "Root") ? node.name : parentL1StageName;
+                newNode.children = node.children.map(child => processNode(child, stageNameToPass));
+            }
+
+            return newNode;
+        }
+
+        let rootDisplayName = jsonData.name;
+        if (jsonData.total_count !== undefined && !/\(Total Count: \d+\)$/.test(rootDisplayName)) {
+            rootDisplayName += ` (Total Count: ${jsonData.total_count})`;
+        }
+
+        return {
+            name: rootDisplayName,
+            originalStageName: "Root",
+            children: (jsonData.children || []).map(child => processNode(child, "Root"))
+        };
+    }
+
+    const treeData = transformData(initialJsonData);
+
+    // Auto-populated phaseColors: every depth-1 child of the root gets
+    // a stable colour from a bigger palette so all top-level dirs are
+    // distinguishable.
+    const PALETTE = [
+      ["#3498DB","#2980B9","#AED6F1"], ["#2ECC71","#27AE60","#A9DFBF"],
+      ["#E74C3C","#C0392B","#F5B7B1"], ["#9B59B6","#8E44AD","#D7BDE2"],
+      ["#F39C12","#D68910","#FAD7A0"], ["#1ABC9C","#117864","#A2D9CE"],
+      ["#34495E","#1B2631","#ABB2B9"], ["#E67E22","#BA4A00","#F5CBA7"],
+      ["#16A085","#0E6655","#A2D9CE"], ["#D35400","#A04000","#EDBB99"],
+      ["#7F8C8D","#566573","#D5DBDB"], ["#C0392B","#7B241C","#F5B7B1"],
+      ["#2E86C1","#1B4F72","#A9CCE3"], ["#28B463","#196F3D","#A9DFBF"],
+      ["#AF7AC5","#6C3483","#D2B4DE"],
+    ];
+    const phaseColors = { "Root": { fill: "#4A4A4A", stroke: "#333333", collapsedFill: "#6C757D" },
+                          "Default": { fill: "#BDC3C7", stroke: "#95A5A6", collapsedFill: "#ECF0F1" } };
+    (initialJsonData.children || []).forEach((c, i) => {
+      const pal = PALETTE[i % PALETTE.length];
+      phaseColors[c.name] = { fill: pal[0], stroke: pal[1], collapsedFill: pal[2] };
+    });
+
+    const levelSpecificPalettes = {
+      0: { fill: "#4A4A4A", stroke: "#333333", collapsedFill: "#6C757D" },
+      2: { fill: "#6ab04c", stroke: "#508a38", collapsedFill: "#a3d391" },
+      3: { fill: "#f0932b", stroke: "#d0730f", collapsedFill: "#f6c07e" },
+      4: { fill: "#be2edd", stroke: "#a01cb3", collapsedFill: "#e08bf2" },
+      5: { fill: "#00a8ff", stroke: "#007ac1", collapsedFill: "#74d2ff" },
+      6: { fill: "#e55039", stroke: "#c23620", collapsedFill: "#f09a8d" },
+      default: { fill: "#747d8c", stroke: "#57606f", collapsedFill: "#a4b0be" }
+    };
+
+    const svgElement = d3.select("#tree-svg");
+    const initialSvgWidth = +svgElement.attr("width");
+    const initialSvgHeight = +svgElement.attr("height");
+    const margin = { top: 40, right: 120, bottom: 80, left: 450 };
+    let width = initialSvgWidth - margin.left - margin.right;
+    let height = initialSvgHeight - margin.top - margin.bottom;
+    const duration = 500;
+    let nodeCounter = 0;
+    const g = svgElement.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+    const treemap = d3.tree().nodeSize([40, 0]);
+    let rootNode = d3.hierarchy(treeData, d => d.children);
+    rootNode.x0 = 0;
+    rootNode.y0 = 0;
+
+    if (rootNode.children) {
+      rootNode.children.forEach(d_child => {
+        if (d_child.children) { collapseBranch(d_child); }
+      });
+    }
+    updateTree(rootNode);
+
+    function collapseBranch(d) { if (d.children) { d._children = d.children; d._children.forEach(collapseBranch); d.children = null; } }
+    function expandBranch(d) { if (d._children) { d.children = d._children; d._children = null; } if (d.children) { d.children.forEach(expandBranch); } }
+    window.expandAll = () => { expandBranch(rootNode); updateTree(rootNode); };
+    window.collapseAll = () => { if (rootNode.children) { rootNode.children.forEach(collapseBranch); } updateTree(rootNode); };
+    window.resetView = () => { if (rootNode.children) { rootNode.children.forEach(d_child => { if (d_child.children || d_child._children) { collapseBranch(d_child); } }); } if (rootNode._children && !rootNode.children) { rootNode.children = rootNode._children; rootNode._children = null; } updateTree(rootNode); };
+
+    function updateTree(source) {
+      const treeLayoutData = treemap(rootNode);
+      let nodes = treeLayoutData.descendants();
+      let links = treeLayoutData.descendants().slice(1);
+
+      let minX = 0;
+      let maxX = 0;
+      if (nodes.length > 0) {
+        minX = d3.min(nodes, d => d.x);
+        maxX = d3.max(nodes, d => d.x);
+      }
+
+      let neededHeight = Math.max(initialSvgHeight, maxX - minX + margin.top + margin.bottom + 100);
+      svgElement.transition().duration(duration / 2).attr("height", neededHeight);
+      g.transition().duration(duration / 2).attr("transform", `translate(${margin.left},${margin.top - minX + 40})`);
+
+      nodes.forEach(d => { d.y = d.depth * 400; }); // Adjust horizontal separation if needed
+
+      const node = g.selectAll('g.node').data(nodes, d => d.id || (d.id = ++nodeCounter));
+      const nodeEnter = node.enter().append('g')
+        .attr('class', d => "node" + (d.children || d._children ? " node--internal" : " node--leaf") + (d._children ? " _children" : ""))
+        .attr('transform', d => `translate(${source.y0},${source.x0})`)
+        .on('click', (event, d) => { if (d.children) { d._children = d.children; d.children = null; } else if (d._children) { d.children = d._children; d._children = null; } updateTree(d); })
+        .style('cursor', d => (d.children || d._children) ? 'pointer' : 'default');
+
+      nodeEnter.append('circle').attr('r', 1e-6);
+
+      nodeEnter.append('text')
+        .attr('dy', '.35em')
+        .attr('x', d => d.children || d._children ? -14 : 14)
+        .attr('text-anchor', d => d.children || d._children ? 'end' : 'start')
+        .style("fill-opacity", 1e-6)
+        .call(wrapText, 380);
+
+      const nodeUpdate = nodeEnter.merge(node);
+      nodeUpdate.transition().duration(duration)
+        .attr('transform', d => `translate(${d.y},${d.x})`)
+        .attr('class', d => "node" + (d.children ? " node--internal" : " node--leaf") + (d._children ? " node--internal _children" : ""));
+
+      nodeUpdate.select('circle').attr('r', 8.5)
+        .style('fill', d => {
+            let palette;
+            if (d.depth === 0) {
+                palette = levelSpecificPalettes[0];
+            } else if (d.depth === 1) {
+                palette = phaseColors[d.data.originalStageName] || phaseColors.Default;
+            } else {
+                palette = levelSpecificPalettes[d.depth] || levelSpecificPalettes.default;
+            }
+            if (d._children) return palette.collapsedFill;
+            if (d.children) return palette.fill;
+            return "#fff";
+        })
+        .style('stroke', d => {
+            let palette;
+            if (d.depth === 0) {
+                palette = levelSpecificPalettes[0];
+            } else if (d.depth === 1) {
+                palette = phaseColors[d.data.originalStageName] || phaseColors.Default;
+            } else {
+                palette = levelSpecificPalettes[d.depth] || levelSpecificPalettes.default;
+            }
+            return palette.stroke;
+        });
+      nodeUpdate.select('text').style("fill-opacity", 1).call(wrapText, 380);
+
+      const nodeExit = node.exit().transition().duration(duration).attr('transform', d => `translate(${source.y},${source.x})`).remove();
+      nodeExit.select('circle').attr('r', 1e-6);
+      nodeExit.select('text').style('fill-opacity', 1e-6);
+
+      const link = g.selectAll('path.link').data(links, d => d.id);
+      const linkEnter = link.enter().insert('path', "g").attr('class', 'link').attr('d', d => { const o = { x: source.x0, y: source.y0 }; return diagonal(o, o); });
+
+      linkEnter.merge(link).transition().duration(duration).attr('d', d => diagonal(d, d.parent))
+        .style('stroke', d => {
+            const sourceNode = d.parent;
+            if (!sourceNode) return phaseColors.Default.stroke;
+            const l1AncestorName = sourceNode.data.originalStageName;
+            const colorPalette = phaseColors[l1AncestorName] || phaseColors.Default;
+            return colorPalette.stroke;
+        });
+      link.exit().transition().duration(duration).attr('d', d => { const o = { x: source.x, y: source.y }; return diagonal(o, o); }).remove();
+      nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+    }
+
+    function diagonal(s, d) { return `M ${s.y} ${s.x} C ${(s.y + d.y) / 2} ${s.x}, ${(s.y + d.y) / 2} ${d.x}, ${d.y} ${d.x}`; }
+
+    function wrapText(textElements, maxWidth) {
+        const textPartColors = {
+            name: '#343a40',
+            count: '#0056b3'
+        };
+        const countRegex = /(\s\(Total Count: \d+\))$/;
+
+        textElements.each(function () {
+            const textD3 = d3.select(this);
+            const originalNodeText = textD3.datum().data.name;
+            const x = parseFloat(textD3.attr("x") || 0);
+            const initialDy = textD3.attr("dy");
+            const textAnchor = textD3.attr("text-anchor");
+            const lineHeight = 1.1;
+
+            textD3.text(null);
+
+            let namePart = originalNodeText;
+            let countPartText = "";
+
+            const countMatch = originalNodeText.match(countRegex);
+            if (countMatch && originalNodeText.endsWith(countMatch[0])) {
+                namePart = originalNodeText.substring(0, originalNodeText.length - countMatch[0].length).trim();
+                countPartText = countMatch[0].trim();
+            }
+
+            const tokens = [];
+            namePart.split(/\s+/).filter(Boolean).forEach(word => {
+                tokens.push({ text: word, type: 'name' });
+            });
+            if (countPartText) {
+                tokens.push({ text: countPartText, type: 'count' });
+            }
+
+            if (tokens.length === 0 && originalNodeText) {
+                tokens.push({ text: originalNodeText, type: 'name' });
+            }
+
+            let currentTspan = textD3.append("tspan").attr("x", x).attr("dy", initialDy);
+            if (textAnchor === "end") currentTspan.attr("text-anchor", "end");
+
+            let lineTokens = [];
+
+            for (let i = 0; i < tokens.length; i++) {
+                const tokenObj = tokens[i];
+
+                lineTokens.push(tokenObj);
+                currentTspan.text(lineTokens.map(t => t.text).join(" "));
+
+                if (currentTspan.node().getComputedTextLength() > maxWidth && lineTokens.length > 1) {
+                    lineTokens.pop();
+
+                    currentTspan.text(null);
+                    lineTokens.forEach((prevToken, idx) => {
+                        currentTspan.append("tspan")
+                            .text((idx > 0 ? " " : "") + prevToken.text)
+                            .style("fill", textPartColors[prevToken.type] || textPartColors.name)
+                            .style("font-weight", prevToken.type === 'count' ? "bold" : "normal");
+                    });
+
+                    lineTokens = [tokenObj];
+                    currentTspan = textD3.append("tspan").attr("x", x).attr("dy", lineHeight + "em");
+                    if (textAnchor === "end") currentTspan.attr("text-anchor", "end");
+                }
+            }
+
+            currentTspan.text(null);
+            lineTokens.forEach((token, idx) => {
+                currentTspan.append("tspan")
+                    .text((idx > 0 ? " " : "") + token.text)
+                    .style("fill", textPartColors[token.type] || textPartColors.name)
+                    .style("font-weight", token.type === 'count' ? "bold" : "normal");
+            });
+
+            if (textD3.selectAll("tspan > tspan").empty() && textD3.select("tspan").text().length === 0 && originalNodeText) {
+                let t = textD3.select("tspan");
+                let displayText = originalNodeText;
+                t.text(displayText).style("fill", textPartColors.name);
+                if (t.node() && t.node().getComputedTextLength() > maxWidth && displayText.length > 20) {
+                    let estimatedChars = Math.floor(maxWidth / (t.node().getComputedTextLength()/displayText.length) );
+                    displayText = displayText.substring(0, Math.max(0, estimatedChars - 3)) + "...";
+                    t.text(displayText);
+                }
+            }
+        });
+    }
+  </script>
+</body>
+</html>
