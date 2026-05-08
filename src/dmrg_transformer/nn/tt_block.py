@@ -32,6 +32,8 @@ current block MSE.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from torch import nn
 
@@ -187,8 +189,18 @@ class TTBlock(nn.Module):
         target_blend: float = 0.5,
         attn_target_blend: float | None = None,
         adaptive_threshold: float | None = None,
+        qk_first: bool = False,
     ) -> dict[str, object]:
-        """Exact-solver update for one Pre-LN block (full Q/K/V/W_out + FFN)."""
+        """Exact-solver update for one Pre-LN block.
+
+        Args:
+            qk_first: If ``True``, Q/K are trained **before** ``W_out``
+                (reversing the default ordering).  This prevents ``W_out``
+                from saturating the MSE floor before Q/K gets a chance to
+                move — the root cause of the "Frozen Attention" symptom
+                identified in REVIEW.md §3.  Defaults to ``False`` for
+                backward compatibility.
+        """
         cache = self.forward_with_cache(X)
         global_mse_before = float(torch.mean((cache["y"] - Y_target) ** 2).item())
 
@@ -222,72 +234,123 @@ class TTBlock(nn.Module):
         context_curr = torch.einsum("bhqk,bhkd->bhqd", attn_w_curr, V_curr)
         context_full_curr = context_curr.transpose(1, 2).reshape(B, L, self.embed_dim)
 
-        rep_Wout = self.attn.W_out.dmrg_step(
-            context_full_curr.reshape(-1, self.embed_dim),
-            attn_out_target.reshape(-1, self.embed_dim),
-            lam=lam,
-            adaptive_threshold=adaptive_threshold,
-        )
+        rep_Wout: Any = None
+        qk_results: dict[str, Any] = {}
+        mse_after_qk: float = 0.0
+        qk_accepted: bool = False
+        v_accepted: bool = False
 
-        # Step 5: context_target through UPDATED W_out.
-        W_out_dense = self.attn.W_out.to_dense_weight()
-        attn_out_minus_b = attn_out_target.reshape(-1, self.embed_dim)
-        if self.attn.W_out._has_bias:
-            attn_out_minus_b = attn_out_minus_b - self.attn.W_out._bias
-        context_target_full = self.propagator.project_through_linear(
-            W_out_dense, attn_out_minus_b,
-        ).reshape(B, L, self.embed_dim)
-        context_target_heads = context_target_full.reshape(B, L, H, d_h).transpose(1, 2)
+        # ---- common helpers ---------------------------------------------------
 
-        # Step 6: Q/K update with trust-region.
-        mse_before_qk = float(torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item())
-        snap_Q = {k: v.detach().clone() for k, v in self.attn.W_Q.state_dict().items()}
-        snap_K = {k: v.detach().clone() for k, v in self.attn.W_K.state_dict().items()}
+        def _pull_context_via_wout(w_out: Any, attn_target: torch.Tensor) -> torch.Tensor:
+            Wd = w_out.to_dense_weight()
+            t = attn_target.reshape(-1, self.embed_dim)
+            if w_out._has_bias:
+                t = t - w_out._bias
+            return self.propagator.project_through_linear(Wd, t).reshape(B, L, self.embed_dim)
 
-        A_target = self.propagator.solve_attention_pattern_target(
-            V_curr, context_target_heads, eps=1.0e-12,
-        )
-        # Use a more conservative blend for the non-convex softmax part.
-        attn_blend = 0.1 * (attn_target_blend if attn_target_blend is not None else target_blend)
-        A_blended = attn_blend * A_target + (1.0 - attn_blend) * attn_w_curr
-        scores_target = self.propagator.softmax_target_to_scores(
-            A_blended, A_curr=attn_w_curr, S_curr=scores_curr, scale=1.0 / scale,
-        )
-        Q_target_heads, _ = self.propagator.project_through_qk_bilinear(scores_target, Q_curr, K_curr)
-        _, K_target_heads = self.propagator.project_through_qk_bilinear(scores_target, Q_target_heads, K_curr)
+        def _qk_update(trust_tol: float = 1.01) -> tuple[bool, float]:
+            nonlocal mse_after_qk
+            mse_before = float(torch.mean(
+                (self.forward_with_cache(X)["y"] - Y_target) ** 2,
+            ).item())
 
-        Y_Q_target = Q_target_heads.transpose(1, 2).reshape(B, L, self.embed_dim)
-        Y_K_target = K_target_heads.transpose(1, 2).reshape(B, L, self.embed_dim)
+            snap_Q = {k: v.detach().clone() for k, v in self.attn.W_Q.state_dict().items()}
+            snap_K = {k: v.detach().clone() for k, v in self.attn.W_K.state_dict().items()}
 
-        qk_results = self.attn.dmrg_step_projections(
-            cache["x_ln1"], Y_Q_target, Y_K_target, None, lam=lam,
-            adaptive_threshold=adaptive_threshold,
-        )
-        mse_after_qk = float(torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item())
-        
-        # Soft Trust-Region: allow 1% increase in MSE to keep attention moving.
-        qk_accepted = mse_after_qk <= 1.01 * mse_before_qk
-        if not qk_accepted:
-            self.attn.W_Q.load_state_dict(snap_Q)
-            self.attn.W_K.load_state_dict(snap_K)
-            mse_after_qk = mse_before_qk
-        
-        # Step 7: V update with trust-region.
+            A_target = self.propagator.solve_attention_pattern_target(
+                V_curr, context_target_heads, eps=1.0e-12,
+            )
+            attn_blend = 0.1 * (
+                attn_target_blend if attn_target_blend is not None else target_blend
+            )
+            A_blended = attn_blend * A_target + (1.0 - attn_blend) * attn_w_curr
+            scores_target = self.propagator.softmax_target_to_scores(
+                A_blended, A_curr=attn_w_curr, S_curr=scores_curr, scale=1.0 / scale,
+            )
+            Q_tgt, _ = self.propagator.project_through_qk_bilinear(scores_target, Q_curr, K_curr)
+            _, K_tgt = self.propagator.project_through_qk_bilinear(scores_target, Q_tgt, K_curr)
+
+            qk_res = self.attn.dmrg_step_projections(
+                cache["x_ln1"],
+                Q_tgt.transpose(1, 2).reshape(B, L, self.embed_dim),
+                K_tgt.transpose(1, 2).reshape(B, L, self.embed_dim),
+                None, lam=lam, adaptive_threshold=adaptive_threshold,
+            )
+            mse_after_qk = float(torch.mean(
+                (self.forward_with_cache(X)["y"] - Y_target) ** 2,
+            ).item())
+
+            ok = mse_after_qk <= trust_tol * mse_before + 1.0e-4
+            if not ok:
+                self.attn.W_Q.load_state_dict(snap_Q)
+                self.attn.W_K.load_state_dict(snap_K)
+                mse_after_qk = mse_before
+            return ok, mse_before, qk_res
+
+        # --------------- attention sub-block (mode-dependent) ------------------
+
+        if qk_first:
+            # Pull context target through CURRENT (pre-update) W_out.
+            context_target_full = _pull_context_via_wout(
+                self.attn.W_out, attn_out_target,
+            )
+            context_target_heads = context_target_full.reshape(B, L, H, d_h).transpose(1, 2)
+
+            # Q/K first — more permissive trust-region (5 % + abs tol) so
+            # the attention pattern has room to explore before W_out locks in.
+            qk_accepted, _, qk_results = _qk_update(trust_tol=1.05)
+
+            # Recompute attention with (possibly updated) Q/K.
+            Q_now = self.attn.W_Q(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
+            K_now = self.attn.W_K(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
+            A_now = torch.softmax(
+                torch.einsum("bhqd,bhkd->bhqk", Q_now, K_now) * scale, dim=-1,
+            )
+            V_now = self.attn.W_V(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
+            context_new = torch.einsum("bhqk,bhkd->bhqd", A_now, V_now)
+            context_full_new = context_new.transpose(1, 2).reshape(B, L, self.embed_dim)
+
+            # W_out sweep against attn_out_target using the NEW context.
+            rep_Wout = self.attn.W_out.dmrg_step(
+                context_full_curr.reshape(-1, self.embed_dim),
+                attn_out_target.reshape(-1, self.embed_dim),
+                lam=lam, adaptive_threshold=adaptive_threshold,
+            )
+
+            # Re-derive context target for V from UPDATED W_out.
+            context_target_full = _pull_context_via_wout(
+                self.attn.W_out, attn_out_target,
+            )
+            context_target_heads = context_target_full.reshape(B, L, H, d_h).transpose(1, 2)
+        else:
+            # Default ordering: W_out first (backward-compatible).
+            rep_Wout = self.attn.W_out.dmrg_step(
+                context_full_curr.reshape(-1, self.embed_dim),
+                attn_out_target.reshape(-1, self.embed_dim),
+                lam=lam, adaptive_threshold=adaptive_threshold,
+            )
+            context_target_full = _pull_context_via_wout(
+                self.attn.W_out, attn_out_target,
+            )
+            context_target_heads = context_target_full.reshape(B, L, H, d_h).transpose(1, 2)
+            qk_accepted, _, qk_results = _qk_update(trust_tol=1.01)
+
+        # --------------- V update (common) -------------------------------------
+
         snap_V = {k: v.detach().clone() for k, v in self.attn.W_V.state_dict().items()}
         Q_now = self.attn.W_Q(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
         K_now = self.attn.W_K(x_ln1_flat).reshape(B, L, H, d_h).transpose(1, 2)
         A_now = torch.softmax(torch.einsum("bhqd,bhkd->bhqk", Q_now, K_now) * scale, dim=-1)
-        
+
         V_target_heads = self.propagator.project_through_attention_v(A_now, context_target_heads)
         Y_V_target = V_target_heads.transpose(1, 2).reshape(B, L, self.embed_dim)
-
         v_results = self.attn.dmrg_step_projections(
             cache["x_ln1"], None, None, Y_V_target, lam=lam,
             adaptive_threshold=adaptive_threshold,
         )
         mse_after_v = float(torch.mean((self.forward_with_cache(X)["y"] - Y_target) ** 2).item())
-        # Soft Trust-Region for V too.
-        v_accepted = mse_after_v <= 1.01 * mse_after_qk
+        v_accepted = mse_after_v <= 1.01 * max(mse_after_qk, 1e-10)
         if not v_accepted:
             self.attn.W_V.load_state_dict(snap_V)
         

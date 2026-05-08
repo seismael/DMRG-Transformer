@@ -32,6 +32,15 @@ sys.path.insert(0, str(ROOT / "src"))
 from dmrg_transformer.core.device import describe_device, require_cuda  # noqa: E402
 from dmrg_transformer.nn import TTBlock  # noqa: E402
 from dmrg_transformer.nn.embeddings import PositionalEncoding  # noqa: E402
+from dmrg_transformer.optim.es_dmrg_hybrid import ESDMRGHybrid  # noqa: E402
+from dmrg_transformer.propagation.target_propagator import TargetPropagator  # noqa: E402
+
+USE_MARGIN_TARGETS = True   # Option E: margin-aware + pool-constrained targets.
+USE_ES_HYBRID = False        # ES/DMRG hybrid: ES for Q/K attention training.
+# NOTE: At 1-block, embed=16 scale, ES on Q/K hurts accuracy (~80% vs ~86%).
+# Attention contributes almost nothing at this scale — FFN+W_out carry all
+# the learning.  ES hybrid is designed for GPT-2 scale (6+ layers, 384+ dim)
+# where attention patterns actually route information.
 
 # ----------------------------------------------------------------------------
 # Hyperparameters
@@ -118,18 +127,19 @@ def confusion(pred: torch.Tensor, y: torch.Tensor, n: int) -> np.ndarray:
 # ----------------------------------------------------------------------------
 class TTBlockClassifier:
     def __init__(self, n_classes: int, device: torch.device) -> None:
+        super().__init__()
         torch.manual_seed(SEED)
-        self.device = device
         self.W_in = torch.randn(TOKEN_DIM, EMBED_DIM, dtype=DTYPE, device=device) * 0.3
         self.b_in = torch.zeros(EMBED_DIM, dtype=DTYPE, device=device)
+        self.pos_enc = PositionalEncoding(EMBED_DIM, max_len=SEQ_LEN, dtype=DTYPE)
         self.block = TTBlock(
             embed_dim=EMBED_DIM, num_heads=NUM_HEADS, hidden_dim=HIDDEN_DIM,
             embed_dims=EMBED_DIMS, hidden_dims=HIDDEN_DIMS,
             rank=RANK, propagator_lam=PROP_LAM, dtype=DTYPE,
         )
-        self.pos_enc = PositionalEncoding(EMBED_DIM, max_len=SEQ_LEN, dtype=DTYPE).to(device)
         self.W_head = torch.zeros(EMBED_DIM, n_classes, dtype=DTYPE, device=device)
         self.b_head = torch.zeros(n_classes, dtype=DTYPE, device=device)
+        self.propagator = TargetPropagator(lam=PROP_LAM)
         self.n_classes = n_classes
 
     @torch.no_grad()
@@ -164,6 +174,13 @@ class TTBlockClassifier:
         self._fit_head_lsq(pooled, Y_onehot)
 
         def compute_R_target() -> torch.Tensor:
+            if USE_MARGIN_TARGETS:
+                r_curr, _, _ = self.forward(X)
+                return self.propagator.compute_margin_aware_block_target(
+                    r_curr, Y_onehot, self.W_head, self.b_head,
+                    target_blend=TARGET_BLEND, margin_scale=1.0,
+                )
+            # Original Frobenius (broadcast) target.
             R_curr, _, logits_curr = self.forward(X)
             residual = Y_onehot - logits_curr
             W = self.W_head
@@ -193,9 +210,17 @@ class TTBlockClassifier:
 
         last_mse = self._mse_to_targets(X, Y_onehot)
         total_rep = None
-        for _ in range(INNER_ITERS):
-            total_rep = self.block.dmrg_step(self._project_input(X), compute_R_target(), lam=DMRG_LAM, target_blend=TARGET_BLEND, attn_target_blend=attn_target_blend)
-            self._fit_head_lsq(self.forward(X)[1], Y_onehot)
+        if USE_ES_HYBRID:
+            hybrid = ESDMRGHybrid(self.block, population_size=15, sigma=0.01, lr=0.1, lam=DMRG_LAM)
+            for _ in range(INNER_ITERS):
+                rep = hybrid.step(self._project_input(X), compute_R_target(), es_rounds=2)
+                total_rep = {"attn": {"accepted": rep.get("es_accepted", False),
+                                      "diagnostics": {"qk_accepted": rep.get("es_accepted", False)}}}
+                self._fit_head_lsq(self.forward(X)[1], Y_onehot)
+        else:
+            for _ in range(INNER_ITERS):
+                total_rep = self.block.dmrg_step(self._project_input(X), compute_R_target(), lam=DMRG_LAM, target_blend=TARGET_BLEND, attn_target_blend=attn_target_blend, qk_first=True)
+                self._fit_head_lsq(self.forward(X)[1], Y_onehot)
 
         return {
             "global_mse_before": last_mse, "global_mse_after": self._mse_to_targets(X, Y_onehot),
@@ -316,6 +341,8 @@ def main() -> None:
 
     _console_print("=== TTBlock trained by DMRG ===")
     tt = TTBlockClassifier(n_classes, device)
+    tt.pos_enc = tt.pos_enc.to(device)
+    tt.block = tt.block.to(device)
     tt_hist = train_tt(tt, data)
 
     _console_print("\n=== Dense block (AdamW + MSE) ===")

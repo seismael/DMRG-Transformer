@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dmrg-transformer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Exact-solver Tensor-Train DMRG optimizer for Transformer-style architectures (GPU/CUDA, no gradients)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,7 +27,6 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-benchmark>=4.0",
-    "hypothesis>=6.100",
     "ruff>=0.8",
     "mypy>=1.13",
 ]
@@ -71,7 +70,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra -q --strict-markers"
+addopts = "-ra -q --strict-markers -p no:hypothesis"
 markers = [
     "slow: long-running benchmarks and end-to-end checks",
     "cuda: tests requiring a CUDA-capable GPU",

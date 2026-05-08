@@ -427,3 +427,118 @@ class TargetPropagator:
             K_target = inner @ Q                            # [B, H, L_k, d_h]
 
         return Q_target, K_target
+
+    # -- Decision-boundary-aware targets (REVIEW.md §3, Option E) -------------
+
+    def compute_logit_target(
+        self,
+        pooled: torch.Tensor,
+        Y_onehot: torch.Tensor,
+        W_head: torch.Tensor,
+        b_head: torch.Tensor,
+        *,
+        margin_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Compute a pooled target that maximises the classification margin.
+
+        Instead of targeting the hard one-hot (Frobenius-norm minimisation),
+        this method operates in **logit space**: it computes the current
+        class probabilities, constructs a margin signal that pushes the
+        correct class up and competing classes down, and pulls the result
+        back to representation space via the Tikhonov-damped pseudo-inverse
+        of ``W_head``.
+
+        The returned target emphasises the feature dimensions that separate
+        classes — it leaves non-discriminative dimensions (those in the
+        null-space of ``W_head``) largely unchanged, preserving the internal
+        routing information that Frobenius targets destroy.
+
+        Args:
+            pooled: ``[batch, D]`` current pooled representation.
+            Y_onehot: ``[batch, C]`` one-hot class targets.
+            W_head: ``[D, C]`` classification head weight.
+            b_head: ``[C]`` classification head bias.
+            margin_scale: aggressiveness of the margin push
+                (1.0 = standard, > 1.0 = more aggressive).
+
+        Returns:
+            ``[batch, D]`` pooled representation target.
+        """
+        logits = pooled @ W_head + b_head                    # [B, C]
+        probs = torch.softmax(logits, dim=-1)                # [B, C]
+        margin_signal = Y_onehot - probs                     # [B, C]
+        logits_target = logits + margin_scale * margin_signal
+        return self.project_through_linear(W_head, logits_target - b_head)
+
+    def compute_pool_constrained_target(
+        self,
+        activations: torch.Tensor,
+        pooled_target: torch.Tensor,
+        *,
+        target_blend: float = 0.5,
+    ) -> torch.Tensor:
+        """Create a per-token target that only constrains the **pool mean**.
+
+        Given per-token activations ``[B, L, D]`` and a desired pooled
+        target ``[B, D]``, returns a per-token target ``[B, L, D]`` that
+        preserves each token's *deviation from the mean* while shifting
+        the mean toward the target.
+
+        This avoids the "broadcast target" problem where all tokens are
+        forced to converge to the same representation — only the pool
+        aggregate is constrained, letting tokens maintain their specialised
+        routing roles.
+
+        Args:
+            activations: ``[B, L, D]`` current per-token activations.
+            pooled_target: ``[B, D]`` desired pool mean.
+            target_blend: ``∈ [0, 1]`` blending factor for the mean shift.
+
+        Returns:
+            ``[B, L, D]`` per-token target with the adjusted pool mean.
+        """
+        if activations.dim() != 3 or pooled_target.dim() != 2:
+            raise ValueError(
+                f"activations must be [B, L, D] (got {tuple(activations.shape)}), "
+                f"pooled_target must be [B, D] (got {tuple(pooled_target.shape)})"
+            )
+        pooled_curr = activations.mean(dim=1)                # [B, D]
+        delta = pooled_target - pooled_curr                  # [B, D]
+        shifted = activations + target_blend * delta.unsqueeze(1)  # [B, L, D]
+        return shifted
+
+    def compute_margin_aware_block_target(
+        self,
+        block_output: torch.Tensor,
+        Y_onehot: torch.Tensor,
+        W_head: torch.Tensor,
+        b_head: torch.Tensor,
+        *,
+        target_blend: float = 0.5,
+        margin_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Convenience: margin-aware + pool-constrained target for a block.
+
+        Chains :meth:`compute_logit_target` and
+        :meth:`compute_pool_constrained_target` into a single call.
+        This is the recommended drop-in replacement for the broadcast
+        ``R_target`` used in real-world classifier training loops.
+
+        Args:
+            block_output: ``[B, L, D]`` current block output.
+            Y_onehot: ``[B, C]`` one-hot class targets.
+            W_head: ``[D, C]`` classification head.
+            b_head: ``[C]`` head bias.
+            target_blend: passed to :meth:`compute_pool_constrained_target`.
+            margin_scale: passed to :meth:`compute_logit_target`.
+
+        Returns:
+            ``[B, L, D]`` per-token, margin-aware target.
+        """
+        pooled = block_output.mean(dim=1)                    # [B, D]
+        pooled_target = self.compute_logit_target(
+            pooled, Y_onehot, W_head, b_head, margin_scale=margin_scale,
+        )
+        return self.compute_pool_constrained_target(
+            block_output, pooled_target, target_blend=target_blend,
+        )
