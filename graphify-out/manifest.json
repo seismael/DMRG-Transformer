@@ -12,8 +12,8 @@
     "hash": "db04a60651c7c00c370d9b13fcc049b4"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\scripts\\poc_softmax_transformer.py": {
-    "mtime": 1777033530.7519007,
-    "hash": "3b608f6bc4c210018e320779531f9537"
+    "mtime": 1778053821.087966,
+    "hash": "c80374d7ffda24b5ad4143dbd2ff0964"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\scripts\\poc_tt_mlp.py": {
     "mtime": 1776969988.637796,
@@ -96,12 +96,16 @@
     "hash": "0a2abc2c46c8da5d8003509cf89f5359"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\nn\\tt_block.py": {
-    "mtime": 1777021759.226214,
-    "hash": "7ec06b8de4b7cc334c0710768f8cdaae"
+    "mtime": 1777995942.8468554,
+    "hash": "7f1bcc22bf2eb3d560287351b87c4f93"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\nn\\tt_ffn.py": {
     "mtime": 1776971509.306185,
     "hash": "2dbc6cb59b48cc9941e56c23ac9f4c4e"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\nn\\tt_gpt2.py": {
+    "mtime": 1778184453.988081,
+    "hash": "aace9bc7a2a88728ab5b1308365001e1"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\nn\\tt_linear.py": {
     "mtime": 1776971426.6331625,
@@ -123,6 +127,14 @@
     "mtime": 1776871598.6364288,
     "hash": "78b19704ad2ef3e322099c486b8709cf"
   },
+  "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\optim\\admm_outer.py": {
+    "mtime": 1777986640.233204,
+    "hash": "8ef20a9ecd7fcb1066794c5f8762f689"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\optim\\es_dmrg_hybrid.py": {
+    "mtime": 1778049498.6262321,
+    "hash": "0a76d17bf97d5ddc8d4141e7ffbde6ba"
+  },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\optim\\local_solver.py": {
     "mtime": 1776961673.963766,
     "hash": "fb722b497939c2e409fd9a31f2d10d5e"
@@ -132,12 +144,12 @@
     "hash": "40109e156fb65300ada548971125452f"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\optim\\__init__.py": {
-    "mtime": 1776810248.4231627,
-    "hash": "1e161ae352d1c67501e0cb11283479a0"
+    "mtime": 1778049451.6313734,
+    "hash": "a99fd2d7021a80f931d22001c218e840"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\propagation\\target_propagator.py": {
-    "mtime": 1777021666.1997235,
-    "hash": "54b4e12269f1a98847cbeb2ed016adcb"
+    "mtime": 1777989385.6788085,
+    "hash": "95df07db00661e65e72605d0eaa43b58"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\src\\dmrg_transformer\\propagation\\__init__.py": {
     "mtime": 1776810248.6065884,
@@ -171,6 +183,38 @@
     "mtime": 1776941118.0301678,
     "hash": "3c25ebfac01425fa29f49dfbf81d4cc2"
   },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_admm_gate_a1.py": {
+    "mtime": 1777984818.3317044,
+    "hash": "64e6266aec64eb47670dee95c0234586"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_admm_gate_a2.py": {
+    "mtime": 1777985275.212287,
+    "hash": "717d3699b3e54e6e86d8652676e7d989"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_admm_gate_a3.py": {
+    "mtime": 1777985727.6395254,
+    "hash": "a053a8dc841eac5d35c399b3f4106988"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_admm_gate_a3b.py": {
+    "mtime": 1777986988.2602842,
+    "hash": "2a99111e9644db4b91309f66ce049536"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_admm_gate_a4.py": {
+    "mtime": 1777987141.3765695,
+    "hash": "ce6328d11a602865d3528cda3d8fca58"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_admm_gate_a5.py": {
+    "mtime": 1777988106.3205848,
+    "hash": "52d7004b89138f669d726f96e8318beb"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_b2_wikitext2.py": {
+    "mtime": 1778000552.178865,
+    "hash": "db58b923655c58317dec6c557d5dab76"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_b3_frozen_head_lm.py": {
+    "mtime": 1778019465.1159484,
+    "hash": "ebdfc89514b875979e398923d01e001c"
+  },
   "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_benchmark_iso_rank.py": {
     "mtime": 1776969988.6593535,
     "hash": "371216e073404b98b422d86d35598796"
@@ -179,9 +223,17 @@
     "mtime": 1776813492.7718892,
     "hash": "ba4230143c6d15b382efc8c75a15f690"
   },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_c2b_hybrid_lm.py": {
+    "mtime": 1778051300.489515,
+    "hash": "f1ce25b6e076d5ba0fe1dfc956db5a97"
+  },
   "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_constraints.py": {
     "mtime": 1776810248.6065884,
     "hash": "d526d6febc0cc7956ceffd1184527ded"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_es_dmrg_hybrid.py": {
+    "mtime": 1778049381.468544,
+    "hash": "967add2a6284235b6566499e4e700271"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_gate1_reconstruction.py": {
     "mtime": 1776810248.421165,
@@ -218,6 +270,18 @@
   "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_numerical_stability.py": {
     "mtime": 1776844694.8672001,
     "hash": "7b81854feac016c0497067b01f5bb40a"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_option_e_margin_targets.py": {
+    "mtime": 1777989810.795994,
+    "hash": "c3c345b1de785965ad222a1ff286c699"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_option_e_unit.py": {
+    "mtime": 1777989957.0140939,
+    "hash": "46015f0cc4c9ce7eff3593b6087bea48"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_qk_first_ordering.py": {
+    "mtime": 1777996055.5931954,
+    "hash": "0f8aa45b3a4e1078df7921e269d531f3"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_real_world_classifier.py": {
     "mtime": 1776867211.3942578,
@@ -267,6 +331,10 @@
     "mtime": 1776810248.422165,
     "hash": "20e624a3079985587cd6f60c5f9333b4"
   },
+  "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_tt_gpt2.py": {
+    "mtime": 1777997949.0025284,
+    "hash": "e0dc993b9c97241e9befd017cdc242b1"
+  },
   "C:\\dev\\projects\\DMRG-Transformer\\tests\\test_tt_linear_attention_block_dmrg.py": {
     "mtime": 1776975008.1450367,
     "hash": "ebb28e4f9dcf18adf2d33ce047966fff"
@@ -280,8 +348,8 @@
     "hash": "897d2a8a19cba40740040cb4f251a248"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\AGENTS.md": {
-    "mtime": 1777957884.715369,
-    "hash": "3f2fc4ced02796db1903c3ed0686c801"
+    "mtime": 1777974517.7460265,
+    "hash": "d58ab7d51747edd35c19064c6219ac63"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\CODE_OF_CONDUCT.md": {
     "mtime": 1776808793.220173,
@@ -296,8 +364,12 @@
     "hash": "b37a689909d38a40adaed66fb5f7d1eb"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\README.md": {
-    "mtime": 1777396636.1239235,
-    "hash": "244c3496fb496eb2cb3b70190346ec4b"
+    "mtime": 1778255621.033478,
+    "hash": "4f1fed50b5b276a605342eb808a3395e"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\RESEARCH_SYNTHESIS.md": {
+    "mtime": 1778054426.957109,
+    "hash": "6201ad7a80ba0e382db5fc43001bca75"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\REVIEW.md": {
     "mtime": 1777397198.2635078,
@@ -324,8 +396,8 @@
     "hash": "409f460bb61bf61d5fa4a9f7c393f62f"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\bench\\REAL_WORLD_TT_BLOCK.md": {
-    "mtime": 1777033780.3266115,
-    "hash": "f5462ea9c68be9fd6d23b2edbb9bb23c"
+    "mtime": 1778054184.7931514,
+    "hash": "3e1482539914d5cf5a4332754e93e590"
   },
   "C:\\dev\\projects\\DMRG-Transformer\\docs\\ARCHITECTURE.md": {
     "mtime": 1777396787.443785,
@@ -358,5 +430,9 @@
   "C:\\dev\\projects\\DMRG-Transformer\\docs\\TENSOR_TOPOLOGY.md": {
     "mtime": 1777397002.9498093,
     "hash": "0ead0305d91189a9d12d47521109c95a"
+  },
+  "C:\\dev\\projects\\DMRG-Transformer\\scripts\\_cache\\wikitext2_train.txt": {
+    "mtime": 1777999818.999546,
+    "hash": "34a77ebe59551b3a3b3d8c0a2797c976"
   }
 }

@@ -10,10 +10,10 @@ AGENTS.md §3 Validation Gate 3: *"The MSE of the DMRG sweep must converge to th
 
 | Estimator | MSE | Wall time (s) |
 | :-------- | --: | ------------: |
-| Dense `torch.linalg.lstsq` (O(N^3), cuSOLVER) | 2.386e-30 | 0.1806 |
+| Dense `torch.linalg.lstsq` (O(N^3), cuSOLVER) | 2.386e-30 | 0.2509 |
 | TT-DMRG initial (random init) | 1.245e+01 | — |
 | TT-DMRG after 1 sweep | 6.379e-02 | — |
-| TT-DMRG after 20 sweeps | 1.349e-29 | 0.6316 |
+| TT-DMRG after 20 sweeps | 1.349e-29 | 2.3186 |
 
 **Parameter count:** TT=512 vs dense=4,096 (8.0× compression).
 

@@ -164,3 +164,9 @@ graphify-out/cache/
 
 # Pytest-benchmark
 .benchmarks/
+
+# IDE and local configs
+.claude/
+
+# Data cache
+scripts/_cache/
