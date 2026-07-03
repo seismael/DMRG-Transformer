@@ -243,11 +243,19 @@ def test_solve_attention_pattern_target_scales_to_long_sequences() -> None:
 
 
 def test_softmax_target_to_scores_round_trip() -> None:
-    """``softmax(softmax_target_to_scores(A)) == A`` (gauge-invariance check)."""
+    """``softmax(softmax_target_to_scores(A)) == A`` (gauge-invariance check).
+
+    The DLTP formula is ``S_target = S_curr + scale · (A_target - A_curr)``.
+    Setting ``A_curr = A_target = A`` and ``S_curr = center(log(A))`` gives
+    ``S_target = S_curr``, which must reproduce ``A`` after softmax.
+    """
     torch.manual_seed(12)
     A = torch.softmax(torch.randn(2, 3, 4, 5, dtype=torch.float64), dim=-1)
+    # Build S_curr whose softmax is A and row sums are zero (gauge condition).
+    S_curr = torch.log(A.clamp_min(1.0e-12))
+    S_curr = S_curr - S_curr.mean(dim=-1, keepdim=True)
     prop = TargetPropagator()
-    scores = prop.softmax_target_to_scores(A, scale=1.0)
+    scores = prop.softmax_target_to_scores(A, A_curr=A, S_curr=S_curr, scale=1.0)
     A_back = torch.softmax(scores, dim=-1)
     err = (A_back - A).abs().max().item()
     assert err < 1.0e-12, f"softmax inverse round-trip failed: {err:.3e}"
@@ -330,7 +338,10 @@ def test_full_attention_pull_back_pipeline_reproduces_context() -> None:
 
     prop = TargetPropagator(lam=1.0e-12)
     A_target = prop.solve_attention_pattern_target(V_true, C_true, eps=1.0e-14)
-    scores_target = prop.softmax_target_to_scores(A_target, scale=1.0 / scale)
+    scores_curr = Q_true @ K_true.transpose(-2, -1) * scale
+    scores_target = prop.softmax_target_to_scores(
+        A_target, A_curr=A_true, S_curr=scores_curr, scale=1.0 / scale,
+    )
     Q_recovered, K_recovered = prop.project_through_qk_bilinear(
         scores_target, Q_true, K_true,
     )

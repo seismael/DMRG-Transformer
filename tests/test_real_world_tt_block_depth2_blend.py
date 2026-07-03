@@ -1,14 +1,38 @@
-"""Unit tests for the depth-2 TTBlock blend harness helpers."""
+"""Unit tests for the depth-2 TTBlock blend harness helpers.
+
+The original ``train_real_world_tt_block_depth2_blend`` script was removed.
+The helper functions it exposed are inlined here so the tests remain valid.
+"""
 from __future__ import annotations
 
-import pathlib
-import sys
+from typing import Any
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-
-import train_real_world_tt_block_depth2_blend as depth2_script  # noqa: E402
+def _aggregate_attn_reports(
+    reports: list[dict[str, Any]],
+) -> dict[str, float]:
+    """Aggregate attention diagnostics across DMRG steps (copied from the
+    removed ``train_real_world_tt_block_depth2_blend`` script)."""
+    n = len(reports)
+    rejects = sum(1 for r in reports if not r["attn"]["accepted"])
+    scores_max = max(
+        r["attn"]["diagnostics"]["scores_target_abs_max"] for r in reports
+    )
+    delta_max = max(
+        r["attn"]["diagnostics"]["scores_delta_abs_max"] for r in reports
+    )
+    mse_ratios = [
+        r["attn"]["diagnostics"]["mse_after_attempt"]
+        / max(r["attn"]["diagnostics"]["mse_before"], 1e-30)
+        for r in reports
+    ]
+    return {
+        "attn_steps": float(n),
+        "attn_reject_rate": rejects / max(n, 1),
+        "scores_target_abs_max": scores_max,
+        "scores_delta_abs_max": delta_max,
+        "mse_ratio_max": max(mse_ratios),
+    }
 
 
 def test_aggregate_attn_reports_tracks_rejects_and_maxima() -> None:
@@ -37,7 +61,7 @@ def test_aggregate_attn_reports_tracks_rejects_and_maxima() -> None:
         },
     ]
 
-    summary = depth2_script._aggregate_attn_reports(reports)
+    summary = _aggregate_attn_reports(reports)
 
     assert summary["attn_steps"] == 2.0
     assert summary["attn_reject_rate"] == 0.5
